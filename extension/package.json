@@ -1,0 +1,16 @@
+{
+  "name": "actually-for-you-extension",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "dev": "web-ext run --source-dir dist",
+    "build": "tsc && node build.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.270",
+    "typescript": "^5.4.5",
+    "vitest": "^1.6.0"
+  }
+}
