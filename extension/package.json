@@ -4,12 +4,13 @@
   "private": true,
   "scripts": {
     "dev": "web-ext run --source-dir dist",
-    "build": "tsc && node build.mjs",
+    "build": "cp -r public/* dist/ && npx esbuild src/background/index.ts --bundle --outfile=dist/background.js --format=esm --target=chrome120 && npx esbuild src/content/index.ts --bundle --outfile=dist/content.js --format=iife --target=chrome120 && npx esbuild src/injected/network-hook.ts --bundle --outfile=dist/injected.js --format=iife --target=chrome120",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@types/chrome": "^0.0.270",
+    "esbuild": "^0.28.1",
     "typescript": "^5.4.5",
     "vitest": "^1.6.0"
   }

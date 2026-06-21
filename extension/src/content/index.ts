@@ -10,12 +10,6 @@ let sessionId = crypto.randomUUID();
 let lastActivity = Date.now();
 const SESSION_IDLE_MS = 30 * 60 * 1000; // ponytail: tunable in M12
 
-// --- Inject the page-context network hook ---
-const script = document.createElement("script");
-script.src = chrome.runtime.getURL("injected.js");
-script.onload = () => script.remove();
-(document.head ?? document.documentElement).prepend(script);
-
 // --- IndexedDB queue (durable; SW drains it) ---
 const queueReady = openQueue();
 
@@ -48,19 +42,19 @@ document.addEventListener("visibilitychange", () => {
 window.addEventListener("blur", () => dwell.pauseAll());
 window.addEventListener("focus", () => dwell.resumeAll());
 
+// ponytail: silently stop on invalidation — expected when extension reloads mid-session
+function send(msg: unknown) {
+  try { chrome.runtime.sendMessage(msg); } catch { /* context invalidated */ }
+}
+
 // --- Receive tweet content from injected page script ---
 window.addEventListener("message", (e: MessageEvent) => {
   if (!e.data?.__afy) return;
-  if (e.data.kind === "tweets") {
-    // Forward to SW for storage
-    chrome.runtime.sendMessage({ kind: "tweets", payload: e.data.payload });
-  }
-  if (e.data.kind === "capture_health") {
-    emit(e.data.detail as CaptureHealthEvent);
-  }
+  if (e.data.kind === "tweets") send({ kind: "tweets", payload: e.data.payload });
+  if (e.data.kind === "capture_health") emit(e.data.detail as CaptureHealthEvent);
 });
 
-// --- Flush queue on page hide (sendBeacon handled in SW via runtime message) ---
+// --- Flush queue on page hide ---
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden) chrome.runtime.sendMessage({ kind: "flush" });
+  if (document.hidden) send({ kind: "flush" });
 });

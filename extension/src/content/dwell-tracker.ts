@@ -51,7 +51,7 @@ export class DwellTracker {
 
     // Observe existing + new tweet articles
     this.observeTimeline();
-    new MutationObserver(() => this.observeTimeline()).observe(document.body, {
+    new MutationObserver(() => this.observeTimeline()).observe(document.documentElement, {
       childList: true,
       subtree: true,
     });
@@ -71,7 +71,7 @@ export class DwellTracker {
     document.addEventListener("click", this.handleClick.bind(this), true);
 
     // Hovercard observer
-    new MutationObserver(this.handleHovercard.bind(this)).observe(document.body, {
+    new MutationObserver(this.handleHovercard.bind(this)).observe(document.documentElement, {
       childList: true,
       subtree: true,
     });
