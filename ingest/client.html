@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>actually for you</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #000;
+    --surface: #0f0f0f;
+    --border: #2f3336;
+    --text: #e7e9ea;
+    --muted: #71767b;
+    --accent: #1d9bf0;
+    font-size: 15px;
+  }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  #app { max-width: 600px; margin: 0 auto; border-left: 1px solid var(--border); border-right: 1px solid var(--border); min-height: 100vh; }
+  header { position: sticky; top: 0; background: rgba(0,0,0,0.85); backdrop-filter: blur(12px); padding: 14px 16px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; z-index: 10; }
+  header h1 { font-size: 20px; font-weight: 700; }
+  header span { color: var(--muted); font-size: 13px; }
+  #sort-btn { background: none; border: 1px solid var(--border); border-radius: 20px; color: var(--text); font-size: 12px; padding: 4px 10px; cursor: pointer; }
+  #sort-btn:hover { background: var(--border); }
+  a.tweet { display: block; text-decoration: none; color: inherit; border-bottom: 1px solid var(--border); padding: 12px 16px; transition: background 0.1s; }
+  a.tweet:hover { background: rgba(255,255,255,0.03); }
+  .meta { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .handle { font-weight: 700; font-size: 14px; }
+  .time { color: var(--muted); font-size: 13px; }
+  .badge { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--border); color: var(--muted); }
+  .badge.opened { background: rgba(29,155,240,0.15); color: var(--accent); }
+  .badge.liked { background: rgba(249,24,128,0.15); color: #f91880; }
+  .text { line-height: 1.5; font-size: 15px; white-space: pre-wrap; word-break: break-word; }
+  .stats { display: flex; gap: 16px; margin-top: 10px; color: var(--muted); font-size: 13px; }
+  .stats span { display: flex; align-items: center; gap: 4px; }
+  .dwell { margin-left: auto; font-size: 12px; color: var(--accent); cursor: pointer; text-decoration: underline dotted; }
+  .imp-rows { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 8px; font-size: 12px; color: var(--muted); display: none; }
+  .imp-rows.open { display: block; }
+  .imp-row { display: flex; gap: 12px; padding: 3px 0; }
+  .imp-row span { white-space: nowrap; }
+  #load-more { display: block; width: 100%; padding: 16px; background: none; border: none; border-top: 1px solid var(--border); color: var(--accent); font-size: 15px; cursor: pointer; }
+  #load-more:hover { background: rgba(29,155,240,0.1); }
+  #load-more:disabled { color: var(--muted); cursor: default; }
+  #status { text-align: center; padding: 32px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>actually for you</h1>
+    <button id="sort-btn" onclick="toggleSort()">sort: ranked ✦</button>
+    <span id="hdr-count"></span>
+  </header>
+  <div id="feed"></div>
+  <button id="load-more" onclick="loadMore()">Load more</button>
+  <div id="status"></div>
+</div>
+<script>
+let offset = 0;
+const LIMIT = 50;
+let total = 0;
+let sort = 'ranked';
+const SORTS = ['ranked', 'dwell', 'time'];
+const SORT_LABELS = { ranked: 'sort: ranked ✦', dwell: 'sort: dwell ↓', time: 'sort: newest ↓' };
+
+function toggleSort() {
+  sort = SORTS[(SORTS.indexOf(sort) + 1) % SORTS.length];
+  document.getElementById('sort-btn').textContent = SORT_LABELS[sort];
+  offset = 0;
+  document.getElementById('feed').innerHTML = '';
+  loadMore();
+}
+
+function fmt(dateStr) {
+  const d = new Date(dateStr);
+  const now = new Date();
+  const diff = (now - d) / 1000;
+  if (diff < 60) return `${Math.round(diff)}s`;
+  if (diff < 3600) return `${Math.round(diff/60)}m`;
+  if (diff < 86400) return `${Math.round(diff/3600)}h`;
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+function fmtDwell(ms) {
+  if (!ms) return '';
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms/1000).toFixed(1)}s`;
+}
+
+function esc(s) {
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function renderTweet(t) {
+  const handle = t.author_handle || (t.author_id ? `@${t.author_id}` : '');
+  const badges = [
+    t.opened ? '<span class="badge opened">read</span>' : '',
+    t.liked  ? '<span class="badge liked">♥ liked</span>' : '',
+    !t.text  ? '<span class="badge">no content</span>' : '',
+    t.lane   ? `<span class="badge">${esc(t.lane)}</span>` : '',
+  ].filter(Boolean).join(' ');
+  const dwell = t.total_dwell ? `<span class="dwell" onclick="toggleImp(event,'${esc(t.tweet_id)}')">${fmtDwell(t.total_dwell)} dwell ▾</span>` : '';
+  const timeStr = t.created_at ? fmt(t.created_at) : fmt(t.last_seen);
+  return `
+    <a class="tweet" href="https://x.com/i/web/status/${esc(t.tweet_id)}" target="_blank" rel="noopener">
+      <div class="meta">
+        ${handle ? `<span class="handle">${esc(handle)}</span>` : ''}
+        <span class="time">${timeStr}</span>
+        ${badges}
+        ${dwell}
+      </div>
+      <div class="text">${t.text ? esc(t.text) : '<span style="color:var(--muted);font-style:italic">content not captured — click to open on X</span>'}</div>
+      <div class="imp-rows" id="imp-${esc(t.tweet_id)}"></div>
+      ${t.text ? `<div class="stats">
+        <span>💬 ${t.replies ?? 0}</span>
+        <span>🔁 ${t.rts ?? 0}</span>
+        <span>♥ ${t.likes ?? 0}</span>
+        ${t.views ? `<span>👁 ${Number(t.views).toLocaleString()}</span>` : ''}
+      </div>` : ''}
+    </a>`;
+}
+
+async function toggleImp(e, tweetId) {
+  e.preventDefault();
+  e.stopPropagation();
+  const el = document.getElementById(`imp-${tweetId}`);
+  if (el.classList.toggle('open') && !el.dataset.loaded) {
+    el.dataset.loaded = '1';
+    el.textContent = 'Loading…';
+    const rows = await fetch(`/impressions/${tweetId}`).then(r => r.json());
+    if (!rows.length) { el.textContent = 'No impression data.'; return; }
+    el.innerHTML = rows.map(r => `
+      <div class="imp-row">
+        <span>${new Date(r.ts).toLocaleTimeString()}</span>
+        <span><b>${fmtDwell(r.dwell_ms)}</b></span>
+        <span>pos #${r.position_in_feed ?? '?'}</span>
+        ${r.flicked ? '<span>⚡ flicked</span>' : ''}
+        ${r.opened_detail ? '<span>🔍 opened</span>' : ''}
+        ${r.liked ? '<span>♥ liked</span>' : ''}
+      </div>`).join('');
+  }
+}
+
+async function loadMore() {
+  const btn = document.getElementById('load-more');
+  btn.disabled = true;
+  btn.textContent = 'Loading…';
+  const r = await fetch(`/feed?limit=${LIMIT}&offset=${offset}&sort=${sort}`);
+  const data = await r.json();
+  total = data.total;
+  offset += data.tweets.length;
+  document.getElementById('hdr-count').textContent = `${total.toLocaleString()} tweets`;
+  document.getElementById('feed').insertAdjacentHTML('beforeend', data.tweets.map(renderTweet).join(''));
+  if (offset >= total) {
+    btn.textContent = 'All caught up';
+  } else {
+    btn.disabled = false;
+    btn.textContent = `Load more (${total - offset} remaining)`;
+  }
+}
+
+loadMore();
+</script>
+</body>
+</html>

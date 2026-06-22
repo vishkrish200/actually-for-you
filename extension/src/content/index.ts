@@ -2,7 +2,7 @@
 // Owns DOM observation (dwell, clicks, expands) + IndexedDB queue.
 // Receives tweet content from injected script via postMessage.
 
-import { openQueue, enqueue } from "./idb-queue";
+import { openQueue, enqueue, drainQueue, deleteKeys } from "./idb-queue";
 import { DwellTracker } from "./dwell-tracker";
 import type { ImpressionEvent, CaptureHealthEvent } from "../types";
 
@@ -54,7 +54,12 @@ window.addEventListener("message", (e: MessageEvent) => {
   if (e.data.kind === "capture_health") emit(e.data.detail as CaptureHealthEvent);
 });
 
-// --- Flush queue on page hide ---
-document.addEventListener("visibilitychange", () => {
-  if (document.hidden) send({ kind: "flush" });
+// --- Flush queue on page hide — drain IDB here (content script owns the page-origin IDB) ---
+document.addEventListener("visibilitychange", async () => {
+  if (!document.hidden) return;
+  await queueReady;
+  const rows = await drainQueue();
+  if (!rows.length) return;
+  send({ kind: "impressions", payload: rows.map(r => r.value) });
+  await deleteKeys(rows.map(r => r.key));
 });

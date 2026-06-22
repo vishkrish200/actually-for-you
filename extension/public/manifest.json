@@ -3,8 +3,8 @@
   "name": "Actually For You",
   "version": "0.0.1",
   "description": "Capture behavioral signals from x.com for personal feed re-ranking.",
-  "permissions": ["storage"],
-  "host_permissions": ["https://x.com/*", "https://twitter.com/*"],
+  "permissions": ["storage", "alarms"],
+  "host_permissions": ["https://x.com/*", "https://twitter.com/*", "http://localhost:2727/*"],
   "background": {
     "service_worker": "background.js",
     "type": "module"

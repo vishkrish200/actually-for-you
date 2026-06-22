@@ -90,14 +90,14 @@ export class DwellTracker {
       }
       this.io.observe(el);
 
-      // Detect node recycling (virtualized scroll)
+      // Detect node recycling (virtualized scroll) — X replaces children, not attributes
       new MutationObserver(() => {
         const newId = this.extractTweetId(el);
-        if (newId && newId !== tweetId) {
+        if (newId !== tweetId) {
           this.finalize(tweetId);
           delete el.dataset.afyObserved;
         }
-      }).observe(el, { attributes: true, subtree: true });
+      }).observe(el, { attributes: true, childList: true, subtree: true });
     });
   }
 
@@ -155,7 +155,12 @@ export class DwellTracker {
 
   pauseAll() {
     this.paused = true;
-    this.states.forEach(s => this.stopTimer(s));
+    // Finalize anything with accumulated dwell — tab switch is a natural session boundary
+    const ids = [...this.states.keys()];
+    for (const id of ids) {
+      this.stopTimer(this.states.get(id)!);
+      if (this.states.get(id)!.dwellMs > 0) this.finalize(id);
+    }
   }
 
   resumeAll() {

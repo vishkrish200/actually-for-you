@@ -25,7 +25,11 @@ function walk(node: unknown, out: TweetRecord[]): void {
   if (obj.__typename === "Tweet" && obj.legacy && obj.rest_id) {
     const t = parseTweetResult(obj);
     if (t) out.push(t);
-    return; // don't recurse into already-parsed tweet
+    // Walk retweeted_status_result so the original tweet's ID is also captured
+    // (dwell tracker reads original tweet ID from DOM; RT wrapper ID never matches)
+    const rt = (obj.legacy as Record<string, unknown>)?.retweeted_status_result;
+    if (rt) walk(rt, out);
+    return;
   }
 
   for (const v of Object.values(obj)) walk(v, out);
