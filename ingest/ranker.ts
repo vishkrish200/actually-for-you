@@ -160,10 +160,21 @@ export function buildFeed(db: DatabaseSync, limit = 50): (Candidate & { score: n
     ).all(VIEWED_PCT) as { tweet_id: string }[]).map(r => r.tweet_id),
   );
 
+  // Negative-feedback veto: a tweet you reported or marked not-interested/muted/blocked is
+  // suppressed from every lane (bookmark too). Mirrors X's near-veto on negative heads; the
+  // graded version (report >> soft-negatives, weighted) is the M5 label-pipeline decision.
+  const suppressed = new Set(
+    (db.prepare(
+      `SELECT tweet_id FROM impressions GROUP BY tweet_id
+       HAVING COALESCE(MAX(reported),0)=1 OR COALESCE(MAX(negative_feedback),0)=1`,
+    ).all() as { tweet_id: string }[]).map(r => r.tweet_id),
+  );
+
   const laneMap = new Map<string, string>();
   for (const lane of LANE_QUERIES) {
     const rows = db.prepare(lane.sql).all() as { tweet_id: string }[];
     for (const r of rows) {
+      if (suppressed.has(r.tweet_id)) continue; // negative-feedback veto
       if (lane.name !== "bookmark" && !seen.has(r.tweet_id)) continue; // viewed-gate
       if (!laneMap.has(r.tweet_id)) laneMap.set(r.tweet_id, lane.name);
     }

@@ -32,6 +32,8 @@ interface TweetState {
   rt: boolean;
   bookmarked: boolean;
   replied: boolean;
+  reported: boolean;
+  negativeFeedback: boolean;
   // engagement state present on the node when this impression began — a flip vs. this
   // baseline is a fresh, DOM-confirmed engagement (catches keyboard 'L'/'T'/'B', not just clicks).
   entryLiked: boolean;
@@ -64,6 +66,9 @@ type OnImpression = (ev: Omit<ImpressionEvent, "session_id">) => void;
 
 export class DwellTracker {
   private states = new Map<string, TweetState>();
+  // tweet_id whose caret (overflow) menu was last opened — the negative-feedback menu items
+  // live in a detached Dropdown popup with no article ancestor, so attribution rides this pointer.
+  private lastCaretTweetId: string | null = null;
   private paused = false;
   private feedPosition = 0;
   private prevScrollY = window.scrollY;
@@ -152,6 +157,8 @@ export class DwellTracker {
       rt: false,
       bookmarked: false,
       replied: false,
+      reported: false,
+      negativeFeedback: false,
       entryLiked: eng.liked,
       entryRt: eng.rt,
       entryBookmarked: eng.bookmarked,
@@ -252,6 +259,8 @@ export class DwellTracker {
       rt: state.rt,
       bookmarked: state.bookmarked,
       replied: state.replied,
+      reported: state.reported,
+      negative_feedback: state.negativeFeedback,
       media_present: state.mediaPresent,
       is_thread: state.isThread,
       char_len: state.charLen,
@@ -269,6 +278,16 @@ export class DwellTracker {
   private handleClick(e: MouseEvent) {
     const target = e.target as HTMLElement;
     const article = target.closest<HTMLElement>('article[data-testid="tweet"]');
+
+    // Negative feedback is reached via the caret (overflow) menu. Opening it from a tracked
+    // tweet pins lastCaretTweetId; the chosen menu item (a detached Dropdown popup) is then
+    // attributed back to that tweet. A caret click is the only entry point, so the pointer is
+    // always fresh when a menu item is clicked.
+    if (article && target.closest('[data-testid="caret"]')) {
+      this.lastCaretTweetId = this.extractTweetId(article);
+    }
+    this.handleNegativeMenuClick(target);
+
     if (!article) return;
     const tweetId = this.extractTweetId(article);
     if (!tweetId) return;
@@ -288,6 +307,25 @@ export class DwellTracker {
     const href = (target.closest("a") as HTMLAnchorElement | null)?.href ?? "";
     if (href && !href.includes("/status/") && href.match(/x\.com\/\w+$/)) {
       state.profileExpanded = "clickthrough";
+    }
+  }
+
+  // Attribute a caret-menu choice to the tweet whose menu is open. Mirrors X's negative heads:
+  // report isolated (their largest-magnitude weight), the soft three (not-interested/"show fewer",
+  // mute, block) bundled as one negative_feedback signal.
+  // ponytail: menu items carry no stable per-item testid, so match visible text (English only).
+  //           Captures intent on menu-click (a started-then-cancelled block still logs aversion) —
+  //           we're recall-starved on negatives. Localize / track-to-confirm if false positives bite.
+  private handleNegativeMenuClick(target: HTMLElement) {
+    if (!target.closest('[data-testid="Dropdown"]')) return;
+    if (this.lastCaretTweetId === null) return;
+    const state = this.states.get(this.lastCaretTweetId);
+    if (!state) return;
+    const item = target.closest('[role="menuitem"]') ?? target;
+    const text = (item.textContent ?? "").toLowerCase();
+    if (text.includes("report")) state.reported = true;
+    else if (text.includes("not interested") || text.includes("mute @") || text.includes("block @")) {
+      state.negativeFeedback = true;
     }
   }
 

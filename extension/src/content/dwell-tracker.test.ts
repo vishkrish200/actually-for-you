@@ -215,6 +215,49 @@ describe("DwellTracker state machine", () => {
     expect(events[0].opened_detail).toBe(true);
   });
 
+  // Open the caret overflow menu on a tweet, then click a menu item by its visible text.
+  // X renders the menu in a detached Dropdown popup with no article ancestor.
+  function pickCaretMenuItem(el: HTMLElement, itemText: string) {
+    const caret = document.createElement("button");
+    caret.dataset.testid = "caret";
+    el.appendChild(caret);
+    caret.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+    const menu = document.createElement("div");
+    menu.dataset.testid = "Dropdown";
+    const item = document.createElement("div");
+    item.setAttribute("role", "menuitem");
+    item.textContent = itemText;
+    menu.appendChild(item);
+    document.body.appendChild(menu);
+    item.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  }
+
+  it("negative: 'Not interested' via the caret menu sets negative_feedback (soft negative)", () => {
+    const el = makeTweetEl("2020");
+    (tracker as any).observeTimeline();
+    intersect(tracker, el, 1.0);
+
+    pickCaretMenuItem(el, "Not interested in this post");
+    intersect(tracker, el, 0); // finalize
+
+    expect(events).toHaveLength(1);
+    expect(events[0].negative_feedback).toBe(true);
+    expect(events[0].reported).toBe(false);
+  });
+
+  it("negative: 'Report post' sets reported, isolated from the soft-negative bundle", () => {
+    const el = makeTweetEl("2121");
+    (tracker as any).observeTimeline();
+    intersect(tracker, el, 1.0);
+
+    pickCaretMenuItem(el, "Report post");
+    intersect(tracker, el, 0);
+
+    expect(events[0].reported).toBe(true);
+    expect(events[0].negative_feedback).toBe(false);
+  });
+
   it("does not double-count: finalize on already-removed state is a no-op", () => {
     const el = makeTweetEl("777");
     (tracker as any).observeTimeline();

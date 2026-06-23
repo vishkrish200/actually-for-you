@@ -97,6 +97,7 @@ describe("buildFeed lane join", () => {
         position_in_feed INTEGER, dwell_ms INTEGER, max_visible_pct REAL,
         scroll_velocity_at_entry REAL, flicked INTEGER, opened_detail INTEGER,
         profile_expanded TEXT, liked INTEGER, rt INTEGER, bookmarked INTEGER, replied INTEGER,
+        reported INTEGER, negative_feedback INTEGER,
         media_present INTEGER, is_thread INTEGER, char_len INTEGER);
     `);
     return db;
@@ -155,5 +156,28 @@ describe("buildFeed lane join", () => {
     assert.ok(!leak || !DWELL_LANES.has(leak.lane), `leaked-dwell tweet must NOT enter a dwell lane, got ${leak?.lane}`);
     assert.equal(read!.total_dwell, 8000, "trusted dwell counts the genuine read");
     assert.equal(leak ? leak.total_dwell : 0, 0, "trusted dwell excludes the fast-scroll leak");
+  });
+
+  it("negative-feedback veto: reported / not-interested tweets are suppressed from every lane", () => {
+    const db = freshDb();
+    // would-otherwise-qualify tweets (seen, good dwell) but flagged negative
+    db.prepare(`INSERT INTO tweets (tweet_id, author_id, text, captured_at)
+                VALUES ('reported1','a','spam i flagged', datetime('now'))`).run();
+    db.prepare(`INSERT INTO impressions (impression_id,tweet_id,dwell_ms,max_visible_pct,scroll_velocity_at_entry,ts,opened_detail,liked,bookmarked,flicked,reported,negative_feedback)
+                VALUES ('i1','reported1',3000,1,1.0,datetime('now'),0,0,0,0,1,0)`).run();
+    db.prepare(`INSERT INTO tweets (tweet_id, author_id, text, captured_at)
+                VALUES ('boring1','b','meh not for me', datetime('now'))`).run();
+    db.prepare(`INSERT INTO impressions (impression_id,tweet_id,dwell_ms,max_visible_pct,scroll_velocity_at_entry,ts,opened_detail,liked,bookmarked,flicked,reported,negative_feedback)
+                VALUES ('i2','boring1',3000,1,1.0,datetime('now'),0,0,0,0,0,1)`).run();
+    // a clean seen tweet that must still surface
+    db.prepare(`INSERT INTO tweets (tweet_id, author_id, text, captured_at)
+                VALUES ('keep1','c','genuinely fine', datetime('now'))`).run();
+    db.prepare(`INSERT INTO impressions (impression_id,tweet_id,dwell_ms,max_visible_pct,scroll_velocity_at_entry,ts,opened_detail,liked,bookmarked,flicked,reported,negative_feedback)
+                VALUES ('i3','keep1',3000,1,1.0,datetime('now'),0,0,0,0,0,0)`).run();
+
+    const ids = buildFeed(db, 50).map(c => c.tweet_id);
+    assert.ok(ids.includes("keep1"), "a clean seen tweet must still surface");
+    assert.ok(!ids.includes("reported1"), "a reported tweet must be vetoed from all lanes");
+    assert.ok(!ids.includes("boring1"), "a not-interested/muted/blocked tweet must be vetoed");
   });
 });

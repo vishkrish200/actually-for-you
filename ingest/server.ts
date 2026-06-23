@@ -27,6 +27,7 @@ db.exec(`
     flicked INTEGER, opened_detail INTEGER,
     profile_expanded TEXT,
     liked INTEGER, rt INTEGER, bookmarked INTEGER, replied INTEGER,
+    reported INTEGER, negative_feedback INTEGER,
     media_present INTEGER, is_thread INTEGER, char_len INTEGER
   );
   CREATE TABLE IF NOT EXISTS capture_health (
@@ -35,8 +36,10 @@ db.exec(`
   );
 `);
 
-// Additive migration for DBs created before author_name existed (append-only safe).
+// Additive migrations for DBs created before these columns existed (append-only safe).
 try { db.exec("ALTER TABLE tweets ADD COLUMN author_name TEXT"); } catch { /* already present */ }
+try { db.exec("ALTER TABLE impressions ADD COLUMN reported INTEGER"); } catch { /* already present */ }
+try { db.exec("ALTER TABLE impressions ADD COLUMN negative_feedback INTEGER"); } catch { /* already present */ }
 
 const stmts = {
   tweet: db.prepare(`
@@ -50,8 +53,9 @@ const stmts = {
       (impression_id, tweet_id, session_id, ts, position_in_feed, dwell_ms,
        max_visible_pct, scroll_velocity_at_entry, flicked, opened_detail,
        profile_expanded, liked, rt, bookmarked, replied,
+       reported, negative_feedback,
        media_present, is_thread, char_len)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `),
   health: db.prepare(
     `INSERT INTO capture_health (ts, kind, detail) VALUES (?,?,?)`
@@ -81,6 +85,7 @@ function ingestBatch(body: {
         imp.scroll_velocity_at_entry, imp.flicked ? 1 : 0, imp.opened_detail ? 1 : 0,
         imp.profile_expanded, imp.liked ? 1 : 0, imp.rt ? 1 : 0,
         imp.bookmarked ? 1 : 0, imp.replied ? 1 : 0,
+        imp.reported ? 1 : 0, imp.negative_feedback ? 1 : 0,
         imp.media_present ? 1 : 0, imp.is_thread ? 1 : 0, imp.char_len,
       );
     }
@@ -206,7 +211,8 @@ interface ImpressionEvent {
   position_in_feed: number; dwell_ms: number; max_visible_pct: number;
   scroll_velocity_at_entry: number; flicked: boolean; opened_detail: boolean;
   profile_expanded: string; liked: boolean; rt: boolean; bookmarked: boolean;
-  replied: boolean; media_present: boolean; is_thread: boolean; char_len: number;
+  replied: boolean; reported: boolean; negative_feedback: boolean;
+  media_present: boolean; is_thread: boolean; char_len: number;
 }
 interface CaptureHealthEvent { ts: string; kind: string; detail: string; }
 

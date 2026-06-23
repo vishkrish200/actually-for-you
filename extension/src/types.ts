@@ -27,6 +27,10 @@ export interface ImpressionEvent {
   rt: boolean;
   bookmarked: boolean;
   replied: boolean;
+  // negative feedback (mirrors X's heavy-ranker negative heads: report is isolated at the
+  // largest magnitude, the soft three — not-interested/"show fewer", mute, block — are bundled).
+  reported: boolean;
+  negative_feedback: boolean;
   // confounder controls — never reward features
   media_present: boolean;
   is_thread: boolean;
