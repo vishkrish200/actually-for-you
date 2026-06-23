@@ -5,3 +5,5 @@ dist/
 .env
 .env.*
 ingest/backups/
+
+ingest/afy.db
