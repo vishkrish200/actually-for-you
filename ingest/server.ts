@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { buildFeed } from "./ranker.ts";
+import { maybeNotify } from "./notify.ts";
 
 const PORT = 2727;
 const DB_PATH = process.env.AFY_DB ?? "afy.db";
@@ -12,7 +13,7 @@ export const db = new DatabaseSync(DB_PATH);
 db.exec(`
   CREATE TABLE IF NOT EXISTS tweets (
     tweet_id TEXT PRIMARY KEY,
-    author_handle TEXT, author_id TEXT, text TEXT,
+    author_handle TEXT, author_name TEXT, author_id TEXT, text TEXT,
     media TEXT,
     is_thread INTEGER, created_at TEXT,
     likes INTEGER, rts INTEGER, replies INTEGER, views INTEGER,
@@ -34,12 +35,15 @@ db.exec(`
   );
 `);
 
+// Additive migration for DBs created before author_name existed (append-only safe).
+try { db.exec("ALTER TABLE tweets ADD COLUMN author_name TEXT"); } catch { /* already present */ }
+
 const stmts = {
   tweet: db.prepare(`
     INSERT OR IGNORE INTO tweets
-      (tweet_id, author_handle, author_id, text, media, is_thread, created_at,
+      (tweet_id, author_handle, author_name, author_id, text, media, is_thread, created_at,
        likes, rts, replies, views, captured_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
   `),
   impression: db.prepare(`
     INSERT OR IGNORE INTO impressions
@@ -64,7 +68,7 @@ function ingestBatch(body: {
   try {
     for (const t of body.tweets ?? []) {
       stmts.tweet.run(
-        t.tweet_id, t.author_handle, t.author_id, t.text,
+        t.tweet_id, t.author_handle, t.author_name ?? "", t.author_id, t.text,
         JSON.stringify(t.media ?? []), t.is_thread ? 1 : 0, t.created_at,
         t.metrics.likes, t.metrics.rts, t.metrics.replies, t.metrics.views ?? null,
         t.captured_at,
@@ -123,6 +127,7 @@ export const server = http.createServer(async (req, res) => {
       ingestBatch(JSON.parse(raw));
       res.writeHead(200, { "Content-Type": "application/json", ...cors });
       res.end(JSON.stringify({ ok: true }));
+      maybeNotify(db).catch(e => console.error("[afy-notify]", e)); // after flush, rate-limited
     } catch (e) {
       res.writeHead(400, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: false, error: String(e) }));
@@ -149,7 +154,7 @@ export const server = http.createServer(async (req, res) => {
     const rows = db.prepare(`
       SELECT
         i.tweet_id,
-        t.author_handle, t.author_id, t.text, t.media,
+        t.author_handle, t.author_name, t.author_id, t.text, t.media,
         t.is_thread, t.created_at, t.likes, t.rts, t.replies, t.views,
         t.captured_at,
         COALESCE(SUM(i.dwell_ms), 0) as total_dwell,
@@ -191,7 +196,7 @@ export const server = http.createServer(async (req, res) => {
 
 // Types (mirrored from extension/src/types.ts — PRD §6 is source of truth)
 interface TweetRecord {
-  tweet_id: string; author_handle: string; author_id: string; text: string;
+  tweet_id: string; author_handle: string; author_name: string; author_id: string; text: string;
   media: { type: string; url: string }[]; is_thread: boolean; created_at: string;
   metrics: { likes: number; rts: number; replies: number; views?: number };
   captured_at: string;

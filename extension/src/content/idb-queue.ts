@@ -1,12 +1,15 @@
 // Durable IndexedDB event queue. SW drains it; events survive SW being killed.
 
-const DB_NAME = "afy-queue";
+// Bumped from "afy-queue" on 2026-06-23 to abandon the pre-fix queue (leaked-dwell impressions
+// captured before the dwell-tracker cap). The old DB is also actively deleted on open.
+const DB_NAME = "afy-queue-v2";
 const STORE = "events";
 
 let db: IDBDatabase | null = null;
 
 export function openQueue(): Promise<void> {
   return new Promise((resolve, reject) => {
+    try { indexedDB.deleteDatabase("afy-queue"); } catch { /* one-time purge of the old queue */ }
     const req = indexedDB.open(DB_NAME, 1);
     req.onupgradeneeded = () => req.result.createObjectStore(STORE, { autoIncrement: true });
     req.onsuccess = () => { db = req.result; resolve(); };

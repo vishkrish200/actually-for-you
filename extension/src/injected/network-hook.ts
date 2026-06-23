@@ -41,6 +41,8 @@ function parseTweetResult(result: Record<string, unknown>): TweetRecord | null {
 
   const core = result.core as Record<string, unknown> | undefined;
   const userResult = (core?.user_results as Record<string, unknown>)?.result as Record<string, unknown> | undefined;
+  // X moved screen_name/name from user.legacy into user.core; read core first, legacy as fallback.
+  const userCore = userResult?.core as Record<string, unknown> | undefined;
   const userLegacy = userResult?.legacy as Record<string, unknown> | undefined;
 
   const tweet_id = String(result.rest_id ?? "");
@@ -50,7 +52,8 @@ function parseTweetResult(result: Record<string, unknown>): TweetRecord | null {
 
   return {
     tweet_id,
-    author_handle: String(userLegacy?.screen_name ?? ""),
+    author_handle: String(userCore?.screen_name ?? userLegacy?.screen_name ?? ""),
+    author_name: String(userCore?.name ?? userLegacy?.name ?? ""),
     author_id: String(userResult?.rest_id ?? ""),
     text: String(legacy.full_text ?? legacy.text ?? ""),
     media: mediaItems.map(m => ({
@@ -121,6 +124,7 @@ XMLHttpRequest.prototype.send = function (...args: unknown[]) {
 interface TweetRecord {
   tweet_id: string;
   author_handle: string;
+  author_name: string;
   author_id: string;
   text: string;
   media: { type: "photo" | "video" | "gif"; url: string }[];

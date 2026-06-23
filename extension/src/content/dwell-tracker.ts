@@ -7,10 +7,19 @@ const VISIBILITY_THRESHOLD = 0.5;
 // ponytail: flick = dwell < 300ms AND high scroll velocity; tune in M12
 const FLICK_DWELL_MS = 300;
 const FLICK_VELOCITY = 5; // px/ms
+// Max dwell credited for ONE continuous visible interval. IntersectionObserver exit events
+// are unreliable under fast scroll + X's node virtualization, so a timer can leak (keep
+// running while the tweet is off-screen) until pauseAll()/finalize drains it — which produced
+// real impressions of 179s–855s on tweets that were only glanced at, and identical leaked
+// values shared across several tweets drained at the same tab-blur. No genuine glance at a
+// single tweet exceeds this without an intervening IO event, so clamp the interval.
+// ponytail: hard cap; a geometry watchdog could credit exact visible time if precision matters.
+const MAX_INTERVAL_MS = 30_000;
 
 interface TweetState {
   impressionId: string;
   tweetId: string;
+  el: HTMLElement;             // node showing this tweet; re-read for engagement confirmation
   entryTs: number;
   dwellMs: number;
   timerStart: number | null; // non-null when actively timing
@@ -23,9 +32,32 @@ interface TweetState {
   rt: boolean;
   bookmarked: boolean;
   replied: boolean;
+  // engagement state present on the node when this impression began — a flip vs. this
+  // baseline is a fresh, DOM-confirmed engagement (catches keyboard 'L'/'T'/'B', not just clicks).
+  entryLiked: boolean;
+  entryRt: boolean;
+  entryBookmarked: boolean;
   mediaPresent: boolean;
   isThread: boolean;
   charLen: number;
+}
+
+// DOM-confirmed engagement state (PRD §5.6: confirm the state flip, don't trust the click).
+// X swaps the action button's data-testid when toggled: like→unlike, retweet→unretweet,
+// bookmark→removeBookmark. Input-agnostic, so it captures keyboard shortcuts too.
+// Promoted tweets give corrupt signal (placement isn't a choice the user made), so they're
+// dropped entirely — no impression. X wraps promoted cells in data-testid="placementTracking".
+// ponytail: anchored on testid per §5; the "Ad" label text is i18n'd and unreliable.
+function isAd(el: HTMLElement): boolean {
+  return el.closest('[data-testid="placementTracking"]') !== null;
+}
+
+function readEngagement(el: HTMLElement) {
+  return {
+    liked: el.querySelector('[data-testid="unlike"]') !== null,
+    rt: el.querySelector('[data-testid="unretweet"]') !== null,
+    bookmarked: el.querySelector('[data-testid="removeBookmark"]') !== null,
+  };
 }
 
 type OnImpression = (ev: Omit<ImpressionEvent, "session_id">) => void;
@@ -81,6 +113,7 @@ export class DwellTracker {
     document.querySelectorAll<HTMLElement>('article[data-testid="tweet"]').forEach(el => {
       if (el.dataset.afyObserved) return;
       el.dataset.afyObserved = "1";
+      if (isAd(el)) return;
       const tweetId = this.extractTweetId(el);
       if (!tweetId) return;
 
@@ -102,9 +135,11 @@ export class DwellTracker {
   }
 
   private makeState(tweetId: string, el: HTMLElement): TweetState {
+    const eng = readEngagement(el); // baseline — a pre-existing like was logged on its own impression
     return {
       impressionId: crypto.randomUUID(),
       tweetId,
+      el,
       entryTs: Date.now(),
       dwellMs: 0,
       timerStart: null,
@@ -117,10 +152,23 @@ export class DwellTracker {
       rt: false,
       bookmarked: false,
       replied: false,
+      entryLiked: eng.liked,
+      entryRt: eng.rt,
+      entryBookmarked: eng.bookmarked,
       mediaPresent: el.querySelector('img, video, [data-testid="tweetPhoto"]') !== null,
       isThread: el.querySelector('[data-testid="tweet-text-show-more-link"]') !== null,
       charLen: (el.querySelector('[data-testid="tweetText"]')?.textContent ?? "").length,
     };
+  }
+
+  // Mark like/rt/bookmark true once the DOM confirms a flip vs. entry baseline.
+  // ponytail: sticky-true — a like-then-undo within one impression still logs the like;
+  //           acceptable, we're recall-starved on positives. Authoritative-at-finalize if that flips.
+  private updateEngagement(state: TweetState) {
+    const now = readEngagement(state.el);
+    if (now.liked && !state.entryLiked) state.liked = true;
+    if (now.rt && !state.entryRt) state.rt = true;
+    if (now.bookmarked && !state.entryBookmarked) state.bookmarked = true;
   }
 
   private handleIntersection(entries: IntersectionObserverEntry[]) {
@@ -128,10 +176,20 @@ export class DwellTracker {
       const el = entry.target as HTMLElement;
       const tweetId = this.extractTweetId(el);
       if (!tweetId) continue;
-      const state = this.states.get(tweetId);
-      if (!state) continue;
+      let state = this.states.get(tweetId);
+      if (!state) {
+        // No live state: this tweet was finalized then scrolled back into view in the
+        // same (un-recycled) node. Re-entry past the visibility gate = a NEW impression
+        // (PRD §5.5). Only create on actual re-entry so hidden nodes don't leak 0ms rows.
+        if (entry.intersectionRatio < VISIBILITY_THRESHOLD) continue;
+        if (isAd(el)) continue;
+        state = this.makeState(tweetId, el);
+        this.states.set(tweetId, state);
+        this.feedPosition++;
+      }
 
       state.maxVisiblePct = Math.max(state.maxVisiblePct, entry.intersectionRatio);
+      this.updateEngagement(state); // confirm like/rt/bookmark before the node scrolls off
 
       if (entry.intersectionRatio >= VISIBILITY_THRESHOLD) {
         this.startTimer(state);
@@ -149,7 +207,7 @@ export class DwellTracker {
 
   private stopTimer(state: TweetState) {
     if (state.timerStart === null) return;
-    state.dwellMs += Date.now() - state.timerStart;
+    state.dwellMs += Math.min(Date.now() - state.timerStart, MAX_INTERVAL_MS);
     state.timerStart = null;
   }
 
@@ -172,6 +230,9 @@ export class DwellTracker {
     const state = this.states.get(tweetId);
     if (!state) return;
     this.stopTimer(state);
+    // Last chance to catch an engagement, but only if the node still shows this tweet
+    // (on recycle the node already holds a different one — reading it would be wrong).
+    if (this.extractTweetId(state.el) === tweetId) this.updateEngagement(state);
     this.states.delete(tweetId);
 
     const flicked = state.dwellMs < FLICK_DWELL_MS && state.scrollVelocityAtEntry > FLICK_VELOCITY;
@@ -214,11 +275,14 @@ export class DwellTracker {
     const state = this.states.get(tweetId);
     if (!state) return;
 
+    // like / rt / bookmark are confirmed via DOM state-flip (readEngagement), NOT the click,
+    // so a click that opens-then-cancels a menu isn't mislogged (PRD §5.6). reply has no toggle
+    // state to confirm against, so the click on the reply button is the signal we have.
     const testId = (target.closest("[data-testid]") as HTMLElement | null)?.dataset.testid ?? "";
-    if (testId === "like" || testId === "unlike") state.liked = true;
-    else if (testId === "retweet" || testId === "unretweet") state.rt = true;
-    else if (testId === "bookmark") state.bookmarked = true;
-    else if (testId === "reply") state.replied = true;
+    if (testId === "reply") state.replied = true;
+
+    // Expanding truncated text / a thread is intent equal to opening the tweet — same high signal.
+    if (testId === "tweet-text-show-more-link") state.openedDetail = true;
 
     // Profile clickthrough
     const href = (target.closest("a") as HTMLAnchorElement | null)?.href ?? "";

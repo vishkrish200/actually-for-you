@@ -1,6 +1,7 @@
 export interface TweetRecord {
   tweet_id: string;
   author_handle: string;
+  author_name: string;
   author_id: string;
   text: string;
   media: { type: "photo" | "video" | "gif"; url: string }[];

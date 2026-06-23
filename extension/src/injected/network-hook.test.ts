@@ -7,6 +7,7 @@ import { describe, it, expect } from "vitest";
 interface TweetRecord {
   tweet_id: string;
   author_handle: string;
+  author_name: string;
   text: string;
   metrics: { likes: number; rts: number; replies: number; views?: number };
 }
@@ -18,10 +19,13 @@ function walk(node: unknown, out: TweetRecord[]): void {
   if (obj.__typename === "Tweet" && obj.legacy && obj.rest_id) {
     const legacy = obj.legacy as Record<string, unknown>;
     const core = obj.core as Record<string, unknown> | undefined;
-    const userLegacy = ((core?.user_results as Record<string, unknown>)?.result as Record<string, unknown>)?.legacy as Record<string, unknown> | undefined;
+    const userResult = (core?.user_results as Record<string, unknown>)?.result as Record<string, unknown> | undefined;
+    const userCore = userResult?.core as Record<string, unknown> | undefined;
+    const userLegacy = userResult?.legacy as Record<string, unknown> | undefined;
     out.push({
       tweet_id: String(obj.rest_id),
-      author_handle: String(userLegacy?.screen_name ?? ""),
+      author_handle: String(userCore?.screen_name ?? userLegacy?.screen_name ?? ""),
+      author_name: String(userCore?.name ?? userLegacy?.name ?? ""),
       text: String(legacy.full_text ?? legacy.text ?? ""),
       metrics: {
         likes: Number(legacy.favorite_count ?? 0),
@@ -61,7 +65,9 @@ const fixture = {
                           user_results: {
                             result: {
                               rest_id: "u999",
-                              legacy: { screen_name: "testuser" },
+                              // current X schema: screen_name/name live in core, not legacy
+                              core: { screen_name: "testuser", name: "Test User" },
+                              legacy: {},
                             },
                           },
                         },
@@ -85,6 +91,7 @@ describe("tweet extractor", () => {
     expect(out).toHaveLength(1);
     expect(out[0].tweet_id).toBe("1234567890");
     expect(out[0].author_handle).toBe("testuser");
+    expect(out[0].author_name).toBe("Test User");
     expect(out[0].text).toBe("Hello world!");
     expect(out[0].metrics.likes).toBe(42);
     expect(out[0].metrics.rts).toBe(7);

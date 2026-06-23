@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node --experimental-strip-types server.ts",
-    "test": "node --experimental-strip-types --test server.test.ts ranker.test.ts"
+    "start": "node --env-file-if-exists=.env.local --experimental-strip-types server.ts",
+    "test": "node --experimental-strip-types --test server.test.ts ranker.test.ts notify.test.ts"
   },
   "devDependencies": {
     "@types/node": "^20",

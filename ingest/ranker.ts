@@ -3,6 +3,7 @@ import type { DatabaseSync } from "node:sqlite";
 export interface Candidate {
   tweet_id: string;
   author_handle: string | null;
+  author_name: string | null;
   author_id: string | null;
   text: string | null;
   media: string | null;
@@ -84,6 +85,17 @@ export function mmr(
   return selected;
 }
 
+// Trusted dwell: the single best *legitimate* view of a tweet — MAX (not SUM) of per-impression
+// dwell, each capped at 60s, ignoring flicks and fast-scroll entries.
+//   - MAX, not SUM: a tweet shown 39 times across a session must not accumulate 39× credit;
+//     genuine lingering shows up as one solid impression, repeated-glance does not.
+//   - cap 60s + drop flicked / high-velocity entries: the capture layer leaks IntersectionObserver
+//     exit events under virtualized scroll, inflating raw dwell to minutes on barely-seen tweets.
+// Together this is what stops the "it says I dwelled on a tweet I never saw" promotion.
+// ponytail: velocity<5 mirrors FLICK_VELOCITY; trades some recall for precision while capture is noisy.
+const TRUSTED_DWELL =
+  `MAX(CASE WHEN flicked = 0 AND COALESCE(scroll_velocity_at_entry, 99) < 5 THEN MIN(dwell_ms, 60000) ELSE 0 END)`;
+
 // Lane priority: first lane wins on dedup. explore is non-negotiable (PRD §7.3).
 const LANE_QUERIES: { name: string; sql: string }[] = [
   {
@@ -115,8 +127,8 @@ const LANE_QUERIES: { name: string; sql: string }[] = [
     sql: `
       SELECT tweet_id FROM impressions
       GROUP BY tweet_id
-      HAVING MAX(opened_detail)=0 AND SUM(dwell_ms) > 1500
-      ORDER BY SUM(dwell_ms) DESC LIMIT 40`,
+      HAVING MAX(opened_detail)=0 AND ${TRUSTED_DWELL} > 1500
+      ORDER BY ${TRUSTED_DWELL} DESC LIMIT 40`,
   },
   {
     name: "resurface",
@@ -124,8 +136,8 @@ const LANE_QUERIES: { name: string; sql: string }[] = [
       SELECT tweet_id FROM impressions
       WHERE datetime(ts) < datetime('now', '-2 hours')
       GROUP BY tweet_id
-      HAVING SUM(dwell_ms) > 5000
-      ORDER BY SUM(dwell_ms) DESC LIMIT 30`,
+      HAVING ${TRUSTED_DWELL} > 5000
+      ORDER BY ${TRUSTED_DWELL} DESC LIMIT 30`,
   },
   {
     name: "explore",
@@ -133,11 +145,26 @@ const LANE_QUERIES: { name: string; sql: string }[] = [
   },
 ];
 
+// Viewed-gate: a tweet is only a candidate if it was actually rendered to the user — at least
+// one impression reached VIEWED_PCT visibility. This excludes the ~2.4k tweets captured from X's
+// GraphQL payload as prefetch but never scrolled into view, plus same-author tweets the user
+// never saw. The product is "re-rank what was in front of me", not discovery of unseen content.
+// bookmark is exempt: an explicit bookmark means you saw it. VIEWED_PCT mirrors the dwell
+// tracker's VISIBILITY_THRESHOLD.
+const VIEWED_PCT = 0.5;
+
 export function buildFeed(db: DatabaseSync, limit = 50): (Candidate & { score: number })[] {
+  const seen = new Set(
+    (db.prepare(
+      `SELECT tweet_id FROM impressions GROUP BY tweet_id HAVING MAX(max_visible_pct) >= ?`,
+    ).all(VIEWED_PCT) as { tweet_id: string }[]).map(r => r.tweet_id),
+  );
+
   const laneMap = new Map<string, string>();
   for (const lane of LANE_QUERIES) {
     const rows = db.prepare(lane.sql).all() as { tweet_id: string }[];
     for (const r of rows) {
+      if (lane.name !== "bookmark" && !seen.has(r.tweet_id)) continue; // viewed-gate
       if (!laneMap.has(r.tweet_id)) laneMap.set(r.tweet_id, lane.name);
     }
   }
@@ -145,14 +172,18 @@ export function buildFeed(db: DatabaseSync, limit = 50): (Candidate & { score: n
   if (laneMap.size === 0) return [];
 
   const ids = [...laneMap.keys()];
-  const placeholders = ids.map(() => "?").join(",");
+  const valuesList = ids.map(() => "(?)").join(",");
 
+  // Anchor on the lane-selected ids, not on either table: a "fresh" tweet may have content
+  // but no impression yet, and a retweet may have impressions but no content row. Joining
+  // FROM impressions (or FROM tweets) would silently drop one or the other.
   const rows = db.prepare(`
+    WITH ids(tweet_id) AS (VALUES ${valuesList})
     SELECT
-      i.tweet_id,
-      t.author_handle, t.author_id, t.text, t.media, t.is_thread,
+      ids.tweet_id,
+      t.author_handle, t.author_name, t.author_id, t.text, t.media, t.is_thread,
       t.created_at, t.likes, t.rts, t.replies, t.views,
-      COALESCE(SUM(i.dwell_ms), 0)     AS total_dwell,
+      COALESCE(${TRUSTED_DWELL.replace(/dwell_ms|flicked|scroll_velocity_at_entry/g, "i.$&")}, 0) AS total_dwell,
       COUNT(i.impression_id)           AS impression_count,
       COALESCE(MAX(i.opened_detail),0) AS opened,
       COALESCE(MAX(i.liked),0)         AS liked,
@@ -161,10 +192,10 @@ export function buildFeed(db: DatabaseSync, limit = 50): (Candidate & { score: n
       COALESCE(SUM(i.flicked),0)       AS flicked_count,
       MAX(i.ts)                        AS last_seen,
       MIN(i.char_len)                  AS char_len
-    FROM impressions i
-    LEFT JOIN tweets t ON i.tweet_id = t.tweet_id
-    WHERE i.tweet_id IN (${placeholders})
-    GROUP BY i.tweet_id
+    FROM ids
+    LEFT JOIN tweets t      ON t.tweet_id = ids.tweet_id
+    LEFT JOIN impressions i ON i.tweet_id = ids.tweet_id
+    GROUP BY ids.tweet_id
   `).all(...ids) as Candidate[];
 
   const candidates = rows.map(r => ({
