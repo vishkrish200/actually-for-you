@@ -3,17 +3,25 @@
 
 const INGEST = "http://localhost:2727/ingest";
 
-async function postToIngest(body: object) {
-  await fetch(INGEST, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  }).catch(() => {}); // ponytail: on server-down, data is lost for tweets; impressions already deleted from IDB
+async function postToIngest(body: object): Promise<boolean> {
+  try {
+    const res = await fetch(INGEST, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return res.ok;
+  } catch {
+    return false; // server down — content script keeps the batch in IDB and retries next flush
+  }
 }
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (msg.kind === "tweets") postToIngest({ tweets: msg.payload });
-  if (msg.kind === "impressions") postToIngest({ impressions: msg.payload });
+  if (msg.kind === "flush") {
+    postToIngest({ tweets: msg.tweets, impressions: msg.impressions, health: msg.health })
+      .then(ok => sendResponse({ ok }));
+    return true; // async sendResponse — keep the channel open
+  }
   sendResponse({ ok: true });
   return false;
 });

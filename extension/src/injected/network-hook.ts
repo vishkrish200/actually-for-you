@@ -1,7 +1,11 @@
 // Runs in PAGE context (not isolated world) so we can wrap fetch/XHR.
 // Captures X GraphQL timeline responses and postMessages them to the content script.
 
-const TIMELINE_OP_PATTERNS = /HomeTimeline|HomeLatestTimeline|TweetDetail/;
+// Match ANY X GraphQL response, not a hand-maintained op-name list — the shape-based walk only
+// emits objects that are actually tweets (rest_id + legacy.full_text), so scanning every GraphQL
+// payload harmlessly captures tweets from whatever surface the user scrolls (home, profile,
+// search, lists, conversation). Op names rotate and multiply; the endpoint path does not.
+const TIMELINE_OP_PATTERNS = /\/graphql\//;
 
 function extractTweets(json: unknown): TweetRecord[] {
   // X nests tweets at: data → * → instructions → entries → content → itemContent
