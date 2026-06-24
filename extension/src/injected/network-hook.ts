@@ -21,14 +21,24 @@ function walk(node: unknown, out: TweetRecord[]): void {
 
   const obj = node as Record<string, unknown>;
 
-  // Tweet result node — has legacy + core
-  if (obj.__typename === "Tweet" && obj.legacy && obj.rest_id) {
-    const t = parseTweetResult(obj);
-    if (t) out.push(t);
-    // Walk retweeted_status_result so the original tweet's ID is also captured
-    // (dwell tracker reads original tweet ID from DOM; RT wrapper ID never matches)
-    const rt = (obj.legacy as Record<string, unknown>)?.retweeted_status_result;
-    if (rt) walk(rt, out);
+  // X wraps many timeline tweets in TweetWithVisibilityResults; the real tweet sits at .tweet
+  // and frequently lacks __typename:"Tweet". Unwrap it before matching.
+  const t = (obj.__typename === "TweetWithVisibilityResults" && obj.tweet
+    ? obj.tweet
+    : obj) as Record<string, unknown>;
+
+  // Match a tweet by SHAPE, not __typename. A tweet result has rest_id + legacy.full_text;
+  // the full_text check discriminates tweets from User objects (also rest_id+legacy, no full_text).
+  // The old `__typename === "Tweet"` check silently dropped every visibility-wrapped tweet —
+  // the "unknown / no content captured" rows.
+  const legacy = t?.legacy as Record<string, unknown> | undefined;
+  if (t?.rest_id && legacy && legacy.full_text !== undefined) {
+    const parsed = parseTweetResult(t);
+    if (parsed) out.push(parsed);
+    // Also capture the original behind a retweet and the quoted tweet — the dwell tracker may
+    // key the impression to either's ID from the DOM.
+    if (legacy.retweeted_status_result) walk(legacy.retweeted_status_result, out);
+    if (legacy.quoted_status_result) walk(legacy.quoted_status_result, out);
     return;
   }
 

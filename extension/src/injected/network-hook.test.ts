@@ -16,14 +16,17 @@ function walk(node: unknown, out: TweetRecord[]): void {
   if (!node || typeof node !== "object") return;
   if (Array.isArray(node)) { node.forEach(n => walk(n, out)); return; }
   const obj = node as Record<string, unknown>;
-  if (obj.__typename === "Tweet" && obj.legacy && obj.rest_id) {
-    const legacy = obj.legacy as Record<string, unknown>;
-    const core = obj.core as Record<string, unknown> | undefined;
+  const t = (obj.__typename === "TweetWithVisibilityResults" && obj.tweet
+    ? obj.tweet
+    : obj) as Record<string, unknown>;
+  const legacy = t?.legacy as Record<string, unknown> | undefined;
+  if (t?.rest_id && legacy && legacy.full_text !== undefined) {
+    const core = t.core as Record<string, unknown> | undefined;
     const userResult = (core?.user_results as Record<string, unknown>)?.result as Record<string, unknown> | undefined;
     const userCore = userResult?.core as Record<string, unknown> | undefined;
     const userLegacy = userResult?.legacy as Record<string, unknown> | undefined;
     out.push({
-      tweet_id: String(obj.rest_id),
+      tweet_id: String(t.rest_id),
       author_handle: String(userCore?.screen_name ?? userLegacy?.screen_name ?? ""),
       author_name: String(userCore?.name ?? userLegacy?.name ?? ""),
       text: String(legacy.full_text ?? legacy.text ?? ""),
@@ -33,6 +36,8 @@ function walk(node: unknown, out: TweetRecord[]): void {
         replies: Number(legacy.reply_count ?? 0),
       },
     });
+    if (legacy.retweeted_status_result) walk(legacy.retweeted_status_result, out);
+    if (legacy.quoted_status_result) walk(legacy.quoted_status_result, out);
     return;
   }
   for (const v of Object.values(obj)) walk(v, out);
@@ -100,6 +105,37 @@ describe("tweet extractor", () => {
   it("returns empty for non-tweet payload", () => {
     const out: TweetRecord[] = [];
     walk({ data: { other: "stuff" } }, out);
+    expect(out).toHaveLength(0);
+  });
+
+  it("captures a tweet wrapped in TweetWithVisibilityResults (inner .tweet, no __typename:Tweet)", () => {
+    const wrapped = {
+      data: { home: { home_timeline_urt: { instructions: [{ type: "TimelineAddEntries", entries: [{
+        content: { itemContent: { tweet_results: { result: {
+          __typename: "TweetWithVisibilityResults",
+          tweet: {
+            rest_id: "999888",
+            legacy: { full_text: "visibility-wrapped tweet", favorite_count: 5, retweet_count: 1, reply_count: 0 },
+            core: { user_results: { result: { rest_id: "u1", core: { screen_name: "wrapped_user", name: "Wrapped" }, legacy: {} } } },
+          },
+        } } } },
+      }] }] } } },
+    };
+    const out: TweetRecord[] = [];
+    walk(wrapped, out);
+    expect(out).toHaveLength(1);
+    expect(out[0].tweet_id).toBe("999888");
+    expect(out[0].author_handle).toBe("wrapped_user");
+    expect(out[0].text).toBe("visibility-wrapped tweet");
+  });
+
+  it("does NOT misparse a User object as a tweet (no legacy.full_text)", () => {
+    const userPayload = { data: { user: { result: {
+      __typename: "User", rest_id: "u42",
+      legacy: { screen_name: "someone", name: "Some One", created_at: "2020-01-01" },
+    } } } };
+    const out: TweetRecord[] = [];
+    walk(userPayload, out);
     expect(out).toHaveLength(0);
   });
 });
