@@ -22,10 +22,12 @@ export interface Candidate {
   flicked_count: number;
   last_seen: string | null;
   char_len: number | null;
+  reviewed: number; // elicited verdict: +1 review-right, -1 review-left, 0 unreviewed
   lane: string;
 }
 
 export const WEIGHTS = {
+  reviewed: 12,    // explicit "show me more" — your strongest positive, above any passive signal
   opened_detail: 10,
   liked: 8,
   bookmarked: 7,
@@ -36,6 +38,7 @@ export const WEIGHTS = {
 
 export function score(c: Candidate): number {
   let s = 0;
+  if (c.reviewed > 0) s += WEIGHTS.reviewed;
   if (c.opened) s += WEIGHTS.opened_detail;
   if (c.liked) s += WEIGHTS.liked;
   if (c.bookmarked) s += WEIGHTS.bookmarked;
@@ -160,15 +163,24 @@ export function buildFeed(db: DatabaseSync, limit = 50): (Candidate & { score: n
     ).all(VIEWED_PCT) as { tweet_id: string }[]).map(r => r.tweet_id),
   );
 
-  // Negative-feedback veto: a tweet you reported or marked not-interested/muted/blocked is
-  // suppressed from every lane (bookmark too). Mirrors X's near-veto on negative heads; the
-  // graded version (report >> soft-negatives, weighted) is the M5 label-pipeline decision.
+  // Latest elicited verdict per tweet (append-only log → most recent ts wins).
+  const verdicts = new Map(
+    (db.prepare(
+      `SELECT tweet_id, verdict FROM reviews
+       WHERE rowid IN (SELECT MAX(rowid) FROM reviews GROUP BY tweet_id)`,
+    ).all() as { tweet_id: string; verdict: number }[]).map(r => [r.tweet_id, r.verdict]),
+  );
+
+  // Negative-feedback veto: a tweet you reported / marked not-interested/muted/blocked, OR
+  // explicitly review-left (-1), is suppressed from every lane (bookmark too). Mirrors X's
+  // near-veto on negative heads; the graded version is the M5 label-pipeline decision.
   const suppressed = new Set(
     (db.prepare(
       `SELECT tweet_id FROM impressions GROUP BY tweet_id
        HAVING COALESCE(MAX(reported),0)=1 OR COALESCE(MAX(negative_feedback),0)=1`,
     ).all() as { tweet_id: string }[]).map(r => r.tweet_id),
   );
+  for (const [id, v] of verdicts) if (v < 0) suppressed.add(id);
 
   const laneMap = new Map<string, string>();
   for (const lane of LANE_QUERIES) {
@@ -209,11 +221,10 @@ export function buildFeed(db: DatabaseSync, limit = 50): (Candidate & { score: n
     GROUP BY ids.tweet_id
   `).all(...ids) as Candidate[];
 
-  const candidates = rows.map(r => ({
-    ...r,
-    lane: laneMap.get(r.tweet_id) ?? "explore",
-    score: score(r as Candidate),
-  }));
+  const candidates = rows.map(r => {
+    const c = { ...r, reviewed: verdicts.get(r.tweet_id) ?? 0 } as Candidate;
+    return { ...c, lane: laneMap.get(r.tweet_id) ?? "explore", score: score(c) };
+  });
 
   candidates.sort((a, b) => b.score - a.score);
   return mmr(candidates, 0.7, limit);

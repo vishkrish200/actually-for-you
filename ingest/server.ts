@@ -34,6 +34,14 @@ db.exec(`
     rowid INTEGER PRIMARY KEY AUTOINCREMENT,
     ts TEXT, kind TEXT, detail TEXT
   );
+  -- Elicited labels from the end-of-session review loop. Append-only log (never mutated):
+  -- a changed mind is a new row, latest ts per tweet wins. +1 = "show me more like this",
+  -- -1 = "don't want to see this". Distinct from passive impressions on purpose — this is
+  -- reflective endorsement, not in-the-moment behavior (an intentional extension of PRD §7.2).
+  CREATE TABLE IF NOT EXISTS reviews (
+    rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+    tweet_id TEXT, verdict INTEGER, ts TEXT
+  );
 `);
 
 // Additive migrations for DBs created before these columns existed (append-only safe).
@@ -59,6 +67,9 @@ const stmts = {
   `),
   health: db.prepare(
     `INSERT INTO capture_health (ts, kind, detail) VALUES (?,?,?)`
+  ),
+  review: db.prepare(
+    `INSERT INTO reviews (tweet_id, verdict, ts) VALUES (?,?,?)`
   ),
 };
 
@@ -139,6 +150,49 @@ export const server = http.createServer(async (req, res) => {
     }
     return;
   }
+  // Review queue: tweets you genuinely dwelled on but haven't signed yet. Built straight from
+  // impressions (NOT buildFeed) so we never elicit labels on the ranker's own output — these are
+  // the ambiguous-magnitude items whose sign only an explicit verdict can settle.
+  if (req.method === "GET" && req.url?.startsWith("/review/queue")) {
+    const url = new URL(req.url, "http://localhost");
+    const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "50"), 100);
+    const rows = db.prepare(`
+      SELECT i.tweet_id,
+        t.author_handle, t.author_name, t.author_id, t.text, t.media,
+        t.created_at, t.likes, t.rts, t.replies, t.views,
+        MAX(CASE WHEN i.flicked=0 AND COALESCE(i.scroll_velocity_at_entry,99) < 5
+                 THEN MIN(i.dwell_ms, 60000) ELSE 0 END) AS trusted_dwell,
+        MAX(i.ts) AS last_seen
+      FROM impressions i
+      LEFT JOIN tweets t ON t.tweet_id = i.tweet_id
+      WHERE i.tweet_id NOT IN (SELECT tweet_id FROM reviews)
+      GROUP BY i.tweet_id
+      HAVING MAX(i.max_visible_pct) >= 0.5 AND trusted_dwell > 1500
+      ORDER BY trusted_dwell DESC
+      LIMIT ?
+    `).all(limit);
+    res.writeHead(200, { "Content-Type": "application/json", ...cors });
+    res.end(JSON.stringify({ tweets: rows }));
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/review") {
+    const raw = await readBody(req);
+    try {
+      const { tweet_id, verdict, ts } = JSON.parse(raw);
+      if (typeof tweet_id !== "string" || (verdict !== 1 && verdict !== -1)) {
+        throw new Error("tweet_id (string) and verdict (+1|-1) required");
+      }
+      stmts.review.run(tweet_id, verdict, ts ?? new Date().toISOString());
+      res.writeHead(200, { "Content-Type": "application/json", ...cors });
+      res.end(JSON.stringify({ ok: true }));
+    } catch (e) {
+      res.writeHead(400, { "Content-Type": "application/json", ...cors });
+      res.end(JSON.stringify({ ok: false, error: String(e) }));
+    }
+    return;
+  }
+
   if (req.method === "GET" && req.url?.startsWith("/feed")) {
     const url = new URL(req.url, "http://localhost");
     const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "50"), 200);

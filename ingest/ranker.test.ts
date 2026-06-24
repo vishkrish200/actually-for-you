@@ -11,7 +11,7 @@ const base = {
   likes: 0, rts: 0, replies: 0, views: null,
   total_dwell: 0, impression_count: 1,
   opened: 0, liked: 0, bookmarked: 0, replied: 0,
-  flicked_count: 0, last_seen: null, char_len: 20, lane: "fresh",
+  flicked_count: 0, last_seen: null, char_len: 20, reviewed: 0, lane: "fresh",
 };
 
 describe("score", () => {
@@ -30,6 +30,11 @@ describe("score", () => {
   it("flicked penalizes below baseline", () => {
     assert(score({ ...base, tweet_id: "a" }) >
            score({ ...base, tweet_id: "b", flicked_count: 1 }));
+  });
+
+  it("review-right is the strongest positive — beats opened_detail", () => {
+    assert(score({ ...base, tweet_id: "a", reviewed: 1 }) >
+           score({ ...base, tweet_id: "b", opened: 1 }));
   });
 
   it("dwell capped at 60s", () => {
@@ -99,6 +104,7 @@ describe("buildFeed lane join", () => {
         profile_expanded TEXT, liked INTEGER, rt INTEGER, bookmarked INTEGER, replied INTEGER,
         reported INTEGER, negative_feedback INTEGER,
         media_present INTEGER, is_thread INTEGER, char_len INTEGER);
+      CREATE TABLE reviews (rowid INTEGER PRIMARY KEY AUTOINCREMENT, tweet_id TEXT, verdict INTEGER, ts TEXT);
     `);
     return db;
   }
@@ -179,5 +185,30 @@ describe("buildFeed lane join", () => {
     assert.ok(ids.includes("keep1"), "a clean seen tweet must still surface");
     assert.ok(!ids.includes("reported1"), "a reported tweet must be vetoed from all lanes");
     assert.ok(!ids.includes("boring1"), "a not-interested/muted/blocked tweet must be vetoed");
+  });
+
+  it("review verdicts: left (-1) vetoes, right (+1) boosts, latest verdict wins", () => {
+    const db = freshDb();
+    // three seen tweets, identical passive signal
+    for (const id of ["rev_yes", "rev_no", "rev_flip"]) {
+      db.prepare(`INSERT INTO tweets (tweet_id, author_id, text, captured_at)
+                  VALUES ('${id}','a','content ${id}', datetime('now'))`).run();
+      db.prepare(`INSERT INTO impressions (impression_id,tweet_id,dwell_ms,max_visible_pct,scroll_velocity_at_entry,ts,opened_detail,liked,bookmarked,flicked,reported,negative_feedback)
+                  VALUES ('i_${id}','${id}',3000,1,1.0,datetime('now'),0,0,0,0,0,0)`).run();
+    }
+    db.prepare(`INSERT INTO reviews (tweet_id, verdict, ts) VALUES ('rev_yes', 1, datetime('now'))`).run();
+    db.prepare(`INSERT INTO reviews (tweet_id, verdict, ts) VALUES ('rev_no', -1, datetime('now'))`).run();
+    // changed mind: first -1, then +1 — latest (+1) must win
+    db.prepare(`INSERT INTO reviews (tweet_id, verdict, ts) VALUES ('rev_flip', -1, datetime('now'))`).run();
+    db.prepare(`INSERT INTO reviews (tweet_id, verdict, ts) VALUES ('rev_flip', 1, datetime('now'))`).run();
+
+    const feed = buildFeed(db, 50);
+    const ids = feed.map(c => c.tweet_id);
+    assert.ok(!ids.includes("rev_no"), "review-left tweet must be vetoed");
+    const yes = feed.find(c => c.tweet_id === "rev_yes");
+    const flip = feed.find(c => c.tweet_id === "rev_flip");
+    assert.ok(flip, "a flipped-to-+1 tweet must NOT be vetoed (latest wins)");
+    assert.ok(yes!.score >= WEIGHTS.reviewed, "review-right adds the reviewed weight");
+    assert.equal(flip!.reviewed, 1, "latest verdict (+1) is the one applied");
   });
 });

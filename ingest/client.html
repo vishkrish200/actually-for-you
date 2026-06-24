@@ -20,8 +20,9 @@
   header { position: sticky; top: 0; background: rgba(0,0,0,0.85); backdrop-filter: blur(12px); padding: 14px 16px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; z-index: 10; }
   header h1 { font-size: 20px; font-weight: 700; }
   header span { color: var(--muted); font-size: 13px; }
-  #sort-btn { background: none; border: 1px solid var(--border); border-radius: 20px; color: var(--text); font-size: 12px; padding: 4px 10px; cursor: pointer; }
-  #sort-btn:hover { background: var(--border); }
+  #sort-btn, #review-btn { background: none; border: 1px solid var(--border); border-radius: 20px; color: var(--text); font-size: 12px; padding: 4px 10px; cursor: pointer; }
+  #sort-btn:hover, #review-btn:hover { background: var(--border); }
+  #app.review #review-btn { background: var(--accent); border-color: var(--accent); color: #fff; }
   a.tweet { display: flex; gap: 12px; text-decoration: none; color: inherit; border-bottom: 1px solid var(--border); padding: 12px 16px; transition: background 0.1s; }
   a.tweet:hover { background: rgba(255,255,255,0.03); }
   .avatar { width: 40px; height: 40px; border-radius: 50%; flex-shrink: 0; background: var(--border); object-fit: cover; }
@@ -46,6 +47,19 @@
   #load-more:hover { background: rgba(29,155,240,0.1); }
   #load-more:disabled { color: var(--muted); cursor: default; }
   #status { text-align: center; padding: 32px; color: var(--muted); }
+  /* review mode */
+  #review { display: none; padding: 16px; }
+  #review.on { display: block; }
+  #app.review #feed, #app.review #load-more, #app.review #sort-btn { display: none; }
+  .rv-card { border: 1px solid var(--border); border-radius: 16px; padding: 18px; }
+  .rv-card .text { margin-top: 8px; }
+  .rv-dwell { color: var(--accent); font-size: 13px; margin-top: 12px; }
+  .rv-actions { display: flex; gap: 12px; margin-top: 18px; }
+  .rv-actions button { flex: 1; padding: 14px; border-radius: 12px; border: 1px solid var(--border); font-size: 15px; font-weight: 700; cursor: pointer; background: var(--surface); color: var(--text); }
+  .rv-no:hover { background: rgba(249,24,128,0.15); border-color: #f91880; color: #f91880; }
+  .rv-yes:hover { background: rgba(0,186,124,0.15); border-color: #00ba7c; color: #00ba7c; }
+  .rv-hint { text-align: center; color: var(--muted); font-size: 12px; margin-top: 14px; }
+  #rv-progress { color: var(--muted); font-size: 13px; }
 </style>
 </head>
 <body>
@@ -53,8 +67,10 @@
   <header>
     <h1>actually for you</h1>
     <button id="sort-btn" onclick="toggleSort()">sort: ranked ✦</button>
-    <span id="hdr-count"></span>
+    <button id="review-btn" onclick="toggleReview()" style="margin-left:auto">review ⚖</button>
+    <span id="hdr-count" style="margin-left:8px"></span>
   </header>
+  <div id="review"></div>
   <div id="feed"></div>
   <button id="load-more" onclick="loadMore()">Load more</button>
   <div id="status"></div>
@@ -176,6 +192,70 @@ async function loadMore() {
   }
 }
 
+// ---- review mode: sign the tweets you dwelled on (→ keep / ← drop) ----
+let rvQueue = [];
+let rvIdx = 0;
+let rvDone = 0;
+
+async function toggleReview() {
+  const app = document.getElementById('app');
+  const on = app.classList.toggle('review');
+  document.getElementById('review').classList.toggle('on', on);
+  if (on) { await loadReviewQueue(); }
+}
+
+async function loadReviewQueue() {
+  rvQueue = (await fetch('/review/queue?limit=50').then(r => r.json())).tweets;
+  rvIdx = 0; rvDone = 0;
+  renderReview();
+}
+
+function renderReview() {
+  const box = document.getElementById('review');
+  if (rvIdx >= rvQueue.length) {
+    box.innerHTML = `<div id="status">${rvDone ? `Signed ${rvDone} tweet${rvDone>1?'s':''}. ` : ''}Nothing left to review.<br><br><span class="rv-hint">Reviewed tweets feed the ranker. Scroll X, then come back.</span></div>`;
+    return;
+  }
+  const t = rvQueue[rvIdx];
+  const handle = t.author_handle || '';
+  const name = t.author_name || handle || 'Unknown';
+  const avatar = handle ? `https://unavatar.io/x/${encodeURIComponent(handle)}` : FALLBACK_AVATAR;
+  box.innerHTML = `
+    <div style="margin-bottom:12px"><span id="rv-progress">${rvIdx + 1} / ${rvQueue.length}</span></div>
+    <div class="rv-card">
+      <div class="meta">
+        <img class="avatar" src="${avatar}" onerror="this.onerror=null;this.src='${FALLBACK_AVATAR}'" alt="">
+        <span class="name">${esc(name)}</span>
+        ${handle ? `<span class="handle">@${esc(handle)}</span>` : ''}
+      </div>
+      <div class="text">${t.text ? esc(t.text) : '<span style="color:var(--muted);font-style:italic">content not captured — open on X</span>'}</div>
+      <div class="rv-dwell">⏱ ${fmtDwell(t.trusted_dwell)} dwell · <a href="https://x.com/i/web/status/${esc(t.tweet_id)}" target="_blank" rel="noopener" style="color:inherit">open on X ↗</a></div>
+      <div class="rv-actions">
+        <button class="rv-no" onclick="rvVote(-1)">← Drop</button>
+        <button class="rv-yes" onclick="rvVote(1)">Keep →</button>
+      </div>
+      <div class="rv-hint">← / → arrow keys · these are the tweets you lingered on</div>
+    </div>`;
+}
+
+async function rvVote(verdict) {
+  const t = rvQueue[rvIdx];
+  if (!t) return;
+  rvIdx++; rvDone++;
+  renderReview(); // advance immediately; POST in the background
+  fetch('/review', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tweet_id: t.tweet_id, verdict }),
+  }).catch(() => {});
+}
+
+document.addEventListener('keydown', e => {
+  if (!document.getElementById('app').classList.contains('review')) return;
+  if (e.key === 'ArrowRight') rvVote(1);
+  else if (e.key === 'ArrowLeft') rvVote(-1);
+});
+
+if (new URLSearchParams(location.search).get('mode') === 'review') toggleReview();
 loadMore();
 </script>
 </body>
