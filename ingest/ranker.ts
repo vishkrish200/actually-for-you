@@ -106,13 +106,17 @@ const LANE_QUERIES: { name: string; sql: string }[] = [
     sql: `SELECT DISTINCT tweet_id FROM impressions WHERE bookmarked=1 LIMIT 20`,
   },
   {
+    // Author affinity comes from explicit endorsement (like / bookmark) only — NOT opened_detail.
+    // Opening a tweet is attention/curiosity (magnitude), not "I like this author"; one open used
+    // to promote the author's entire catalog. A read-but-not-endorsed tweet still surfaces on its
+    // own dwell via backlog/resurface; it just no longer drags the whole author in.
     name: "liked_author",
     sql: `
       SELECT DISTINCT t.tweet_id FROM tweets t
       WHERE t.author_id IN (
         SELECT DISTINCT t2.author_id FROM impressions i
         JOIN tweets t2 ON i.tweet_id = t2.tweet_id
-        WHERE i.liked=1 OR i.opened_detail=1
+        WHERE i.liked=1 OR i.bookmarked=1
       ) LIMIT 40`,
   },
   {

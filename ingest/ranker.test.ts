@@ -187,6 +187,25 @@ describe("buildFeed lane join", () => {
     assert.ok(!ids.includes("boring1"), "a not-interested/muted/blocked tweet must be vetoed");
   });
 
+  it("liked_author needs explicit endorsement (like/bookmark) — opening one tweet does NOT promote the author", () => {
+    const db = freshDb();
+    // author A: one tweet OPENED (read 18s) but never liked/bookmarked, + a second unseen-by-engagement tweet
+    db.prepare(`INSERT INTO tweets (tweet_id, author_id, text, captured_at) VALUES ('a_opened','authA','opened this one', datetime('now'))`).run();
+    db.prepare(`INSERT INTO impressions (impression_id,tweet_id,dwell_ms,max_visible_pct,scroll_velocity_at_entry,ts,opened_detail,liked,bookmarked,flicked) VALUES ('ia1','a_opened',18000,1,1.0,datetime('now'),1,0,0,0)`).run();
+    db.prepare(`INSERT INTO tweets (tweet_id, author_id, text, captured_at) VALUES ('a_other','authA','other tweet by same author', datetime('now'))`).run();
+    db.prepare(`INSERT INTO impressions (impression_id,tweet_id,dwell_ms,max_visible_pct,scroll_velocity_at_entry,ts,opened_detail,liked,bookmarked,flicked) VALUES ('ia2','a_other',2000,1,1.0,datetime('now'),0,0,0,0)`).run();
+    // author B: one tweet actually LIKED, + a second tweet that should ride the affinity
+    db.prepare(`INSERT INTO tweets (tweet_id, author_id, text, captured_at) VALUES ('b_liked','authB','liked this one', datetime('now'))`).run();
+    db.prepare(`INSERT INTO impressions (impression_id,tweet_id,dwell_ms,max_visible_pct,scroll_velocity_at_entry,ts,opened_detail,liked,bookmarked,flicked) VALUES ('ib1','b_liked',2000,1,1.0,datetime('now'),0,1,0,0)`).run();
+    db.prepare(`INSERT INTO tweets (tweet_id, author_id, text, captured_at) VALUES ('b_other','authB','other tweet by liked author', datetime('now'))`).run();
+    db.prepare(`INSERT INTO impressions (impression_id,tweet_id,dwell_ms,max_visible_pct,scroll_velocity_at_entry,ts,opened_detail,liked,bookmarked,flicked) VALUES ('ib2','b_other',2000,1,1.0,datetime('now'),0,0,0,0)`).run();
+
+    const byId = new Map(buildFeed(db, 50).map(c => [c.tweet_id, c]));
+    assert.notEqual(byId.get("a_other")?.lane, "liked_author", "an opened-but-not-endorsed author must NOT yield a liked_author lane");
+    assert.equal(byId.get("b_other")?.lane, "liked_author", "a genuinely liked author still promotes their other tweets");
+    assert.ok(byId.has("a_opened"), "the opened tweet itself still surfaces (on its own dwell/open)");
+  });
+
   it("review verdicts: left (-1) vetoes, right (+1) boosts, latest verdict wins", () => {
     const db = freshDb();
     // three seen tweets, identical passive signal
