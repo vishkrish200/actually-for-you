@@ -1,7 +1,7 @@
 // Per-tweet dwell state machine.
 // Accumulates focused+visible time keyed by tweet_id, NOT by DOM node.
 
-import type { ImpressionEvent } from "../types";
+import type { ImpressionEvent, TweetRecord } from "../types";
 
 const VISIBILITY_THRESHOLD = 0.5;
 // ponytail: flick = dwell < 300ms AND high scroll velocity; tune in M12
@@ -62,7 +62,47 @@ function readEngagement(el: HTMLElement) {
   };
 }
 
+// DOM-scrape a tweet's content from its rendered article — the safety net for tweets X served
+// from its own client cache or fetched before our network hook installed, so no GraphQL response
+// ever crossed the wire to parse (the residual "unknown / no content" rows). Lower fidelity than a
+// net record (no metrics, no author_id), so it's tagged source:"dom" and ingest lets a net record
+// win. Returns null only if the article has no readable text/handle (nothing worth storing).
+// ponytail: metrics default 0 — the DOM counts are i18n'd aria-labels; not worth parsing for the
+//           tail of tweets the network never sees. Scrape them if a net upgrade path is ever added.
+export function scrapeContent(el: HTMLElement, tweetId: string): TweetRecord | null {
+  const statusLink = el.querySelector<HTMLAnchorElement>('a[href*="/status/"]');
+  const handleMatch = statusLink?.getAttribute("href")?.match(/^\/([^/]+)\/status\/\d+/);
+  const author_handle = handleMatch?.[1] ?? "";
+
+  const text = (el.querySelector('[data-testid="tweetText"]')?.textContent ?? "").trim();
+  // Nothing readable on the node (e.g. a media-only quote shell) — don't store an empty husk.
+  if (!text && !author_handle) return null;
+
+  // User-Name testid concatenates "DisplayName@handle·time"; the display name is the first link's text.
+  const author_name = (el.querySelector('[data-testid="User-Name"] a')?.textContent ?? "").trim();
+  const created_at = el.querySelector<HTMLTimeElement>("time")?.getAttribute("datetime") ?? "";
+
+  const media = [...el.querySelectorAll<HTMLImageElement>('[data-testid="tweetPhoto"] img')]
+    .map(img => ({ type: "photo" as const, url: img.src }))
+    .filter(m => m.url);
+
+  return {
+    tweet_id: tweetId,
+    author_handle,
+    author_name,
+    author_id: "",
+    text,
+    media,
+    is_thread: el.querySelector('[data-testid="tweet-text-show-more-link"]') !== null,
+    created_at,
+    metrics: { likes: 0, rts: 0, replies: 0 },
+    captured_at: new Date().toISOString(),
+    source: "dom",
+  };
+}
+
 type OnImpression = (ev: Omit<ImpressionEvent, "session_id">) => void;
+type OnContent = (tweet: TweetRecord) => void;
 
 export class DwellTracker {
   private states = new Map<string, TweetState>();
@@ -76,9 +116,14 @@ export class DwellTracker {
   private scrollVelocity = 0;
   private io!: IntersectionObserver;
   private onImpression: OnImpression;
+  private onContent?: OnContent;
+  // tweet_ids we've already DOM-scraped this content-script lifetime — scrape once per id, the
+  // server dedups the rest (net wins). Keeps the durable queue from bloating on scroll-back.
+  private contentScraped = new Set<string>();
 
-  constructor({ onImpression }: { onImpression: OnImpression }) {
+  constructor({ onImpression, onContent }: { onImpression: OnImpression; onContent?: OnContent }) {
     this.onImpression = onImpression;
+    this.onContent = onContent;
   }
 
   start() {
@@ -122,6 +167,9 @@ export class DwellTracker {
       const tweetId = this.extractTweetId(el);
       if (!tweetId) return;
 
+      // Gap-fill content from the DOM (once per id) — covers tweets the network hook never saw.
+      this.scrapeContentOnce(tweetId, el);
+
       if (!this.states.has(tweetId)) {
         this.states.set(tweetId, this.makeState(tweetId, el));
         this.feedPosition++;
@@ -137,6 +185,14 @@ export class DwellTracker {
         }
       }).observe(el, { attributes: true, childList: true, subtree: true });
     });
+  }
+
+  private scrapeContentOnce(tweetId: string, el: HTMLElement) {
+    if (!this.onContent || this.contentScraped.has(tweetId)) return;
+    const tweet = scrapeContent(el, tweetId);
+    if (!tweet) return; // husk node with no text/handle yet — try again on a later observe
+    this.contentScraped.add(tweetId);
+    this.onContent(tweet);
   }
 
   private makeState(tweetId: string, el: HTMLElement): TweetState {
@@ -190,6 +246,7 @@ export class DwellTracker {
         // (PRD §5.5). Only create on actual re-entry so hidden nodes don't leak 0ms rows.
         if (entry.intersectionRatio < VISIBILITY_THRESHOLD) continue;
         if (isAd(el)) continue;
+        this.scrapeContentOnce(tweetId, el);
         state = this.makeState(tweetId, el);
         this.states.set(tweetId, state);
         this.feedPosition++;

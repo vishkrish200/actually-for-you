@@ -9,6 +9,11 @@ export interface TweetRecord {
   created_at: string;
   metrics: { likes: number; rts: number; replies: number; views?: number };
   captured_at: string;
+  // "net" = parsed from a GraphQL response (rich: metrics, author_id, created_at).
+  // "dom" = scraped from the rendered article when X served the tweet from its client cache
+  // or fetched it before our network hook installed, so no response crossed the wire to parse.
+  // DOM is the gap-filler; a net record for the same id always wins (ingest writes net first).
+  source?: "net" | "dom";
 }
 
 export interface ImpressionEvent {

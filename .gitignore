@@ -7,3 +7,6 @@ dist/
 ingest/backups/
 
 ingest/afy.db
+
+# stray WXT scaffold (we build with esbuild, not wxt)
+extension/.wxt/

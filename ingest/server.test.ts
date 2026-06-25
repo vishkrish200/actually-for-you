@@ -66,6 +66,38 @@ describe("ingest server", () => {
     assert.equal(n, 1);
   });
 
+  it("DOM content fills a gap the network never captured", async () => {
+    const dom = { ...tweet, tweet_id: "dom1", text: "scraped", source: "dom",
+      metrics: { likes: 0, rts: 0, replies: 0 } };
+    await post({ tweets: [dom] });
+    const row = db.prepare("SELECT text, source FROM tweets WHERE tweet_id='dom1'").get() as any;
+    assert.equal(row.text, "scraped");
+    assert.equal(row.source, "dom");
+  });
+
+  it("network record wins over a DOM record in the same batch, regardless of order", async () => {
+    const net = { ...tweet, tweet_id: "race1", text: "net-rich", source: "net",
+      metrics: { likes: 42, rts: 0, replies: 0 } };
+    const dom = { ...tweet, tweet_id: "race1", text: "dom-poor", source: "dom",
+      metrics: { likes: 0, rts: 0, replies: 0 } };
+    // DOM listed FIRST in the array — ingest must still let the net record win.
+    await post({ tweets: [dom, net] });
+    const row = db.prepare("SELECT text, likes, source FROM tweets WHERE tweet_id='race1'").get() as any;
+    assert.equal(row.text, "net-rich");
+    assert.equal(row.likes, 42);
+    assert.equal(row.source, "net");
+  });
+
+  it("a later DOM batch does not clobber an existing network row", async () => {
+    const net = { ...tweet, tweet_id: "keep1", text: "net-rich", source: "net" };
+    await post({ tweets: [net] });
+    const dom = { ...tweet, tweet_id: "keep1", text: "dom-poor", source: "dom" };
+    await post({ tweets: [dom] });
+    const row = db.prepare("SELECT text, source FROM tweets WHERE tweet_id='keep1'").get() as any;
+    assert.equal(row.text, "net-rich");
+    assert.equal(row.source, "net");
+  });
+
   it("append-only: no UPDATE or DELETE in server.ts", () => {
     const src = readFileSync(new URL("./server.ts", import.meta.url), "utf8");
     assert.ok(!(/\bUPDATE\b/i).test(src), "found UPDATE in server.ts");

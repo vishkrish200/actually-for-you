@@ -32,6 +32,9 @@ const dwell = new DwellTracker({
     refreshSession();
     emit({ __k: "impression", v: { ...ev, session_id: sessionId } });
   },
+  // DOM-scraped content fallback (source:"dom") — fills the gap for tweets the GraphQL hook never
+  // saw. Same durable queue as network tweets; ingest writes net first so a richer record wins.
+  onContent: (tweet: TweetRecord) => emit({ __k: "tweets", v: [tweet] }),
 });
 dwell.start();
 

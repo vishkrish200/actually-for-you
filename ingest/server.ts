@@ -17,7 +17,8 @@ db.exec(`
     media TEXT,
     is_thread INTEGER, created_at TEXT,
     likes INTEGER, rts INTEGER, replies INTEGER, views INTEGER,
-    captured_at TEXT
+    captured_at TEXT,
+    source TEXT DEFAULT 'net'
   );
   CREATE TABLE IF NOT EXISTS impressions (
     impression_id TEXT PRIMARY KEY,
@@ -46,6 +47,7 @@ db.exec(`
 
 // Additive migrations for DBs created before these columns existed (append-only safe).
 try { db.exec("ALTER TABLE tweets ADD COLUMN author_name TEXT"); } catch { /* already present */ }
+try { db.exec("ALTER TABLE tweets ADD COLUMN source TEXT DEFAULT 'net'"); } catch { /* already present */ }
 try { db.exec("ALTER TABLE impressions ADD COLUMN reported INTEGER"); } catch { /* already present */ }
 try { db.exec("ALTER TABLE impressions ADD COLUMN negative_feedback INTEGER"); } catch { /* already present */ }
 
@@ -53,8 +55,8 @@ const stmts = {
   tweet: db.prepare(`
     INSERT OR IGNORE INTO tweets
       (tweet_id, author_handle, author_name, author_id, text, media, is_thread, created_at,
-       likes, rts, replies, views, captured_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+       likes, rts, replies, views, captured_at, source)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `),
   impression: db.prepare(`
     INSERT OR IGNORE INTO impressions
@@ -81,12 +83,19 @@ function ingestBatch(body: {
   const run = db.prepare("BEGIN");
   run.run();
   try {
-    for (const t of body.tweets ?? []) {
+    // Net (GraphQL-parsed) tweets first so a rich record wins the INSERT OR IGNORE over a DOM
+    // gap-filler for the same id. ponytail: a DOM row written in an earlier batch is NOT replaced
+    // when its net record arrives later (rare cross-batch ordering); add a conflict-upgrade clause
+    // if the tail's missing metrics ever matter. Content stays insert-only — no row is ever mutated.
+    const tweets = [...(body.tweets ?? [])].sort(
+      (a, b) => (a.source === "dom" ? 1 : 0) - (b.source === "dom" ? 1 : 0),
+    );
+    for (const t of tweets) {
       stmts.tweet.run(
         t.tweet_id, t.author_handle, t.author_name ?? "", t.author_id, t.text,
         JSON.stringify(t.media ?? []), t.is_thread ? 1 : 0, t.created_at,
         t.metrics.likes, t.metrics.rts, t.metrics.replies, t.metrics.views ?? null,
-        t.captured_at,
+        t.captured_at, t.source === "dom" ? "dom" : "net",
       );
     }
     for (const imp of body.impressions ?? []) {
@@ -259,6 +268,7 @@ interface TweetRecord {
   media: { type: string; url: string }[]; is_thread: boolean; created_at: string;
   metrics: { likes: number; rts: number; replies: number; views?: number };
   captured_at: string;
+  source?: "net" | "dom";
 }
 interface ImpressionEvent {
   impression_id: string; tweet_id: string; session_id: string; ts: string;

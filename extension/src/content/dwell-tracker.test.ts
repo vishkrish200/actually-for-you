@@ -1,6 +1,6 @@
 // M1: dwell state machine tests — tab-blur, fast-scroll/flick, node-recycling.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { DwellTracker } from "./dwell-tracker";
+import { DwellTracker, scrapeContent } from "./dwell-tracker";
 import type { ImpressionEvent } from "../types";
 
 // Build a minimal tweet article DOM node
@@ -268,5 +268,50 @@ describe("DwellTracker state machine", () => {
     (tracker as any).finalize("777"); // finalize #2 — should be no-op
 
     expect(events).toHaveLength(1); // only one emission
+  });
+});
+
+describe("scrapeContent (DOM gap-filler for tweets the network hook never saw)", () => {
+  afterEach(() => { document.body.innerHTML = ""; });
+
+  // A realistic article: handle lives in the /handle/status/id link, text in tweetText,
+  // display name in User-Name, timestamp in <time datetime>, a photo in tweetPhoto.
+  function richArticle(): HTMLElement {
+    const article = document.createElement("article");
+    article.dataset.testid = "tweet";
+    article.innerHTML = `
+      <div data-testid="User-Name"><a href="/michelle_a_tran"><span>Michelle</span></a></div>
+      <a href="/michelle_a_tran/status/2035434907351011489"><time datetime="2026-06-20T10:00:00.000Z"></time></a>
+      <div data-testid="tweetText">weird little post</div>
+      <div data-testid="tweetPhoto"><img src="https://pbs.twimg.com/media/abc.jpg"></div>`;
+    document.body.appendChild(article);
+    return article;
+  }
+
+  it("extracts handle, text, name, created_at, media and tags source=dom", () => {
+    const t = scrapeContent(richArticle(), "2035434907351011489")!;
+    expect(t.author_handle).toBe("michelle_a_tran");
+    expect(t.text).toBe("weird little post");
+    expect(t.author_name).toBe("Michelle");
+    expect(t.created_at).toBe("2026-06-20T10:00:00.000Z");
+    expect(t.media).toEqual([{ type: "photo", url: "https://pbs.twimg.com/media/abc.jpg" }]);
+    expect(t.source).toBe("dom");
+    expect(t.metrics).toEqual({ likes: 0, rts: 0, replies: 0 });
+  });
+
+  it("returns null for a husk node with no text or handle", () => {
+    const empty = document.createElement("article");
+    empty.dataset.testid = "tweet";
+    document.body.appendChild(empty);
+    expect(scrapeContent(empty, "999")).toBeNull();
+  });
+
+  it("DwellTracker emits content once per id via onContent", () => {
+    const got: string[] = [];
+    const tracker = new DwellTracker({ onImpression: () => {}, onContent: t => got.push(t.tweet_id) });
+    const el = richArticle();
+    (tracker as any).scrapeContentOnce("2035434907351011489", el);
+    (tracker as any).scrapeContentOnce("2035434907351011489", el); // second call must be a no-op
+    expect(got).toEqual(["2035434907351011489"]);
   });
 });
