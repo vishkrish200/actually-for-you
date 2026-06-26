@@ -95,12 +95,35 @@ function parseTweetResult(result: Record<string, unknown>): TweetRecord | null {
 function isJson(contentType: string | null): boolean {
   return (contentType ?? "").includes("json");
 }
-function emitTweetsFromBody(body: string): void {
+
+// Membership in your own Likes / Bookmarks timeline IS a confirmed positive — every tweet there is
+// one you explicitly endorsed, regardless of where X later positioned it. This harvests your entire
+// historical library as labels (the in-session DOM-flip only catches likes made WHILE we watch, and
+// the entry-baseline deliberately ignores already-liked tweets). The op NAME is the last /graphql/
+// path segment; X rotates the numeric query id but not the name (PRD §5 — match by op name).
+// The op name is the last /graphql/ path segment. Match the op FAMILY by prefix, not an exact name:
+// verified live, the liked-tweets timeline is "Likes", but the bookmarks timeline is a versioned name
+// (X serves "BookmarkFoldersSlice" for folders and a "Bookmark…Timeline…" op for the tweets). A
+// prefix survives X's version bumps; variants that carry no tweets (e.g. the folders slice) just mint
+// no labels, so over-matching is harmless.
+export function opSource(url: string): "like" | "bookmark" | null {
+  const op = (url.split("?")[0].split("/").pop() ?? "");
+  if (/^Likes/.test(op)) return "like";
+  if (/^Bookmark/.test(op)) return "bookmark";
+  return null;
+}
+
+function emitTweetsFromBody(body: string, source: "like" | "bookmark" | null): void {
   if (!body) return;
   let json: unknown;
   try { json = JSON.parse(body); } catch { return; }
   const tweets = extractTweets(json);
-  if (tweets.length) window.postMessage({ __afy: true, kind: "tweets", payload: tweets }, "*");
+  if (!tweets.length) return;
+  window.postMessage({ __afy: true, kind: "tweets", payload: tweets }, "*");
+  // On the Likes/Bookmarks timeline, mint a confirmed-positive label per tweet.
+  if (source) {
+    window.postMessage({ __afy: true, kind: "confirmed", source, ids: tweets.map(t => t.tweet_id) }, "*");
+  }
 }
 
 // --- Fetch hook ---
@@ -113,7 +136,8 @@ window.fetch = async function (...args: Parameters<typeof fetch>) {
   const res = await _fetch(...args);
 
   if (TIMELINE_OP_PATTERNS.test(url) && res.ok && isJson(res.headers.get("content-type"))) {
-    res.clone().text().then(emitTweetsFromBody).catch(() => { /* body read/clone failed — not a capture miss */ });
+    const source = opSource(url);
+    res.clone().text().then(t => emitTweetsFromBody(t, source)).catch(() => { /* body read/clone failed — not a capture miss */ });
   }
 
   return res;
@@ -134,7 +158,7 @@ XMLHttpRequest.prototype.send = function (...args: unknown[]) {
   if (xhr.__afy_url && TIMELINE_OP_PATTERNS.test(xhr.__afy_url)) {
     xhr.addEventListener("load", function () {
       if (xhr.status === 200 && isJson(xhr.getResponseHeader("content-type"))) {
-        emitTweetsFromBody(xhr.responseText);
+        emitTweetsFromBody(xhr.responseText, opSource(xhr.__afy_url ?? ""));
       }
     });
   }

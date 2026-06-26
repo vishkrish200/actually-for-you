@@ -98,6 +98,29 @@ describe("ingest server", () => {
     assert.equal(row.source, "net");
   });
 
+  it("harvests confirmed positives from Likes/Bookmarks into engagement_labels", async () => {
+    await post({ confirmed: [
+      { source: "like", ids: ["lk1", "lk2"] },
+      { source: "bookmark", ids: ["bm1"] },
+    ]});
+    const likes = (db.prepare("SELECT COUNT(*) n FROM engagement_labels WHERE source='like'").get() as any).n;
+    const bms = (db.prepare("SELECT COUNT(*) n FROM engagement_labels WHERE source='bookmark'").get() as any).n;
+    assert.equal(likes, 2);
+    assert.equal(bms, 1);
+  });
+
+  it("re-scrolling the Likes tab doesn't duplicate a label (idempotent on tweet_id+source)", async () => {
+    await post({ confirmed: [{ source: "like", ids: ["lk1", "lk1", "lk3"] }] });
+    const n = (db.prepare("SELECT COUNT(*) n FROM engagement_labels WHERE source='like'").get() as any).n;
+    assert.equal(n, 3); // lk1 (already present, deduped), lk2 (prior test), lk3 — not 4+
+  });
+
+  it("same tweet can be both liked AND bookmarked (distinct rows)", async () => {
+    await post({ confirmed: [{ source: "like", ids: ["both1"] }, { source: "bookmark", ids: ["both1"] }] });
+    const n = (db.prepare("SELECT COUNT(*) n FROM engagement_labels WHERE tweet_id='both1'").get() as any).n;
+    assert.equal(n, 2);
+  });
+
   it("append-only: no UPDATE or DELETE in server.ts", () => {
     const src = readFileSync(new URL("./server.ts", import.meta.url), "utf8");
     assert.ok(!(/\bUPDATE\b/i).test(src), "found UPDATE in server.ts");

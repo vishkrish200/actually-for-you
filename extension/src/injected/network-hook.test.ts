@@ -139,3 +139,28 @@ describe("tweet extractor", () => {
     expect(out).toHaveLength(0);
   });
 });
+
+// opSource: resolve the Likes/Bookmarks confirmed-positive source from a GraphQL URL.
+// Inline copy (the real one lives in network-hook.ts; duplicated so the test has no window dep).
+function opSource(url: string): "like" | "bookmark" | null {
+  const op = (url.split("?")[0].split("/").pop() ?? "");
+  if (/^Likes/.test(op)) return "like";
+  if (/^Bookmark/.test(op)) return "bookmark";
+  return null;
+}
+
+describe("opSource (harvest Likes/Bookmarks as confirmed positives)", () => {
+  it("detects the liked-tweets timeline", () => {
+    expect(opSource("https://x.com/i/api/graphql/abc123/Likes?variables=%7B%7D")).toBe("like");
+  });
+  it("detects the bookmarks timeline despite its versioned op name", () => {
+    // verified live: the bookmarks tweet timeline is a Bookmark*-prefixed versioned op, not "Bookmarks"
+    expect(opSource("https://x.com/i/api/graphql/xyz/BookmarkTimelineV2?variables=1")).toBe("bookmark");
+    expect(opSource("https://x.com/i/api/graphql/xyz/BookmarkFoldersSlice?v=1")).toBe("bookmark");
+  });
+  it("ignores ordinary feed ops", () => {
+    expect(opSource("https://x.com/i/api/graphql/q/HomeTimeline?variables=1")).toBeNull();
+    expect(opSource("https://x.com/i/api/graphql/q/TweetDetail?variables=1")).toBeNull();
+    expect(opSource("https://x.com/i/api/1.1/graphql/viewer_context.json")).toBeNull();
+  });
+});

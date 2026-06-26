@@ -62,6 +62,8 @@ window.addEventListener("message", (e: MessageEvent) => {
   if (!e.data?.__afy) return;
   if (e.data.kind === "tweets") emit({ __k: "tweets", v: e.data.payload as TweetRecord[] });
   if (e.data.kind === "capture_health") emit({ __k: "health", v: e.data.detail as CaptureHealthEvent });
+  // Confirmed-positive labels harvested from the Likes/Bookmarks timeline.
+  if (e.data.kind === "confirmed") emit({ __k: "confirmed", v: { source: e.data.source, ids: e.data.ids } });
 });
 
 // --- Flush the durable queue to the server. Content script owns the page-origin IDB; the SW does

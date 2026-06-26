@@ -18,7 +18,7 @@ async function postToIngest(body: object): Promise<boolean> {
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.kind === "flush") {
-    postToIngest({ tweets: msg.tweets, impressions: msg.impressions, health: msg.health })
+    postToIngest({ tweets: msg.tweets, impressions: msg.impressions, health: msg.health, confirmed: msg.confirmed })
       .then(ok => sendResponse({ ok }));
     return true; // async sendResponse — keep the channel open
   }

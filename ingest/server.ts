@@ -43,6 +43,14 @@ db.exec(`
     rowid INTEGER PRIMARY KEY AUTOINCREMENT,
     tweet_id TEXT, verdict INTEGER, ts TEXT
   );
+  -- Confirmed positives harvested from your own Likes / Bookmarks timelines. Membership in those
+  -- lists IS an explicit endorsement — the strongest, least-biased positive label we have (no dwell,
+  -- no propensity correction needed). Append-only; (tweet_id, source) keyed so re-scrolling the tab
+  -- doesn't duplicate. ts = when harvested (the original like-time isn't exposed by the API).
+  CREATE TABLE IF NOT EXISTS engagement_labels (
+    tweet_id TEXT, source TEXT, ts TEXT,
+    PRIMARY KEY (tweet_id, source)
+  );
 `);
 
 // Additive migrations for DBs created before these columns existed (append-only safe).
@@ -73,12 +81,16 @@ const stmts = {
   review: db.prepare(
     `INSERT INTO reviews (tweet_id, verdict, ts) VALUES (?,?,?)`
   ),
+  engLabel: db.prepare(
+    `INSERT OR IGNORE INTO engagement_labels (tweet_id, source, ts) VALUES (?,?,?)`
+  ),
 };
 
 function ingestBatch(body: {
   tweets?: TweetRecord[];
   impressions?: ImpressionEvent[];
   health?: CaptureHealthEvent[];
+  confirmed?: { source: "like" | "bookmark"; ids: string[] }[];
 }) {
   const run = db.prepare("BEGIN");
   run.run();
@@ -112,6 +124,10 @@ function ingestBatch(body: {
     for (const h of body.health ?? []) {
       stmts.health.run(h.ts, h.kind, h.detail);
     }
+    const harvestedAt = new Date().toISOString();
+    for (const c of body.confirmed ?? []) {
+      for (const id of c.ids ?? []) stmts.engLabel.run(id, c.source, harvestedAt);
+    }
     db.prepare("COMMIT").run();
   } catch (e) {
     db.prepare("ROLLBACK").run();
@@ -133,6 +149,8 @@ export const server = http.createServer(async (req, res) => {
       tweets: (db.prepare("SELECT COUNT(*) as n FROM tweets").get() as any).n,
       impressions: (db.prepare("SELECT COUNT(*) as n FROM impressions").get() as any).n,
       health: (db.prepare("SELECT COUNT(*) as n FROM capture_health").get() as any).n,
+      likes: (db.prepare("SELECT COUNT(*) as n FROM engagement_labels WHERE source='like'").get() as any).n,
+      bookmarks: (db.prepare("SELECT COUNT(*) as n FROM engagement_labels WHERE source='bookmark'").get() as any).n,
     };
     res.writeHead(200, { "Content-Type": "application/json", ...cors });
     res.end(JSON.stringify(counts));

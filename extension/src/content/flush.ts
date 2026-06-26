@@ -7,7 +7,7 @@
 import { partition, type QueuedEvent } from "./queue-router";
 
 type Row = { key: IDBValidKey; value: QueuedEvent };
-type Send = (msg: { kind: "flush"; impressions: unknown[]; tweets: unknown[]; health: unknown[] }) => Promise<boolean>;
+type Send = (msg: { kind: "flush"; impressions: unknown[]; tweets: unknown[]; health: unknown[]; confirmed: unknown[] }) => Promise<boolean>;
 
 export async function flushInChunks(
   rows: Row[],
@@ -18,8 +18,8 @@ export async function flushInChunks(
   let sent = 0;
   for (let i = 0; i < rows.length; i += chunkSize) {
     const slice = rows.slice(i, i + chunkSize);
-    const { impressions, tweets, health } = partition(slice.map(r => r.value));
-    const ok = await send({ kind: "flush", impressions, tweets, health });
+    const { impressions, tweets, health, confirmed } = partition(slice.map(r => r.value));
+    const ok = await send({ kind: "flush", impressions, tweets, health, confirmed });
     if (!ok) break; // SW/server down — keep this and the remaining rows for the next flush
     await deleteKeys(slice.map(r => r.key));
     sent += slice.length;
