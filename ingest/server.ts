@@ -51,6 +51,13 @@ db.exec(`
     tweet_id TEXT, source TEXT, ts TEXT,
     PRIMARY KEY (tweet_id, source)
   );
+  -- Tweets pruned from the POSITIVE set — a stale/unwanted like or bookmark. This is "not a current
+  -- positive", NOT a negative: the label pipeline excludes these from positives but must NOT feed them
+  -- to the negative class (that's reserved for report/mute/block). Append-only; reason records how it
+  -- was pruned ('age' = bulk age cut-off, 'reviewed' = per-tweet drop in the review tool).
+  CREATE TABLE IF NOT EXISTS label_prunes (
+    tweet_id TEXT PRIMARY KEY, reason TEXT, ts TEXT
+  );
 `);
 
 // Additive migrations for DBs created before these columns existed (append-only safe).
@@ -83,6 +90,9 @@ const stmts = {
   ),
   engLabel: db.prepare(
     `INSERT OR IGNORE INTO engagement_labels (tweet_id, source, ts) VALUES (?,?,?)`
+  ),
+  prune: db.prepare(
+    `INSERT OR IGNORE INTO label_prunes (tweet_id, reason, ts) VALUES (?,?,?)`
   ),
 };
 
@@ -151,6 +161,7 @@ export const server = http.createServer(async (req, res) => {
       health: (db.prepare("SELECT COUNT(*) as n FROM capture_health").get() as any).n,
       likes: (db.prepare("SELECT COUNT(*) as n FROM engagement_labels WHERE source='like'").get() as any).n,
       bookmarks: (db.prepare("SELECT COUNT(*) as n FROM engagement_labels WHERE source='bookmark'").get() as any).n,
+      pruned: (db.prepare("SELECT COUNT(*) as n FROM label_prunes").get() as any).n,
     };
     res.writeHead(200, { "Content-Type": "application/json", ...cors });
     res.end(JSON.stringify(counts));
@@ -220,6 +231,45 @@ export const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // Prune a tweet from the positive set (used by the like-review tool's "drop" + the bulk age cut).
+  if (req.method === "POST" && req.url === "/prune") {
+    const raw = await readBody(req);
+    try {
+      const { tweet_id, reason } = JSON.parse(raw);
+      if (typeof tweet_id !== "string") throw new Error("tweet_id (string) required");
+      stmts.prune.run(tweet_id, reason ?? "reviewed", new Date().toISOString());
+      res.writeHead(200, { "Content-Type": "application/json", ...cors });
+      res.end(JSON.stringify({ ok: true }));
+    } catch (e) {
+      res.writeHead(400, { "Content-Type": "application/json", ...cors });
+      res.end(JSON.stringify({ ok: false, error: String(e) }));
+    }
+    return;
+  }
+
+  // Review queue for harvested likes: ids not yet pruned and not yet kept. The review page renders
+  // each via X's embed widget (we only stored ids), so this returns ids + nothing else. Newest first.
+  if (req.method === "GET" && req.url?.startsWith("/prune/queue")) {
+    const url = new URL(req.url, "http://localhost");
+    const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "50"), 200);
+    const rows = db.prepare(`
+      SELECT tweet_id FROM engagement_labels
+      WHERE source = 'like'
+        AND tweet_id NOT IN (SELECT tweet_id FROM label_prunes)
+        AND tweet_id NOT IN (SELECT tweet_id FROM reviews WHERE verdict = 1)
+      ORDER BY tweet_id DESC
+      LIMIT ?
+    `).all(limit) as { tweet_id: string }[];
+    const remaining = (db.prepare(`
+      SELECT COUNT(*) n FROM engagement_labels
+      WHERE source='like' AND tweet_id NOT IN (SELECT tweet_id FROM label_prunes)
+        AND tweet_id NOT IN (SELECT tweet_id FROM reviews WHERE verdict=1)
+    `).get() as any).n;
+    res.writeHead(200, { "Content-Type": "application/json", ...cors });
+    res.end(JSON.stringify({ ids: rows.map(r => r.tweet_id), remaining }));
+    return;
+  }
+
   if (req.method === "GET" && req.url?.startsWith("/feed")) {
     const url = new URL(req.url, "http://localhost");
     const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "50"), 200);
@@ -272,6 +322,13 @@ export const server = http.createServer(async (req, res) => {
 
   if (req.method === "GET" && (req.url === "/" || req.url === "/client")) {
     const html = fs.readFileSync(path.join(import.meta.dirname, "client.html"));
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end(html);
+    return;
+  }
+
+  if (req.method === "GET" && req.url === "/prune") {
+    const html = fs.readFileSync(path.join(import.meta.dirname, "prune.html"));
     res.writeHead(200, { "Content-Type": "text/html" });
     res.end(html);
     return;
