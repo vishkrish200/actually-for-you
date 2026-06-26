@@ -3,7 +3,8 @@
 // Receives tweet content from injected script via postMessage.
 
 import { openQueue, enqueue, drainQueue, deleteKeys } from "./idb-queue";
-import { partition, type QueuedEvent } from "./queue-router";
+import { type QueuedEvent } from "./queue-router";
+import { flushInChunks } from "./flush";
 import { DwellTracker } from "./dwell-tracker";
 import type { ImpressionEvent, CaptureHealthEvent, TweetRecord } from "../types";
 
@@ -63,16 +64,29 @@ window.addEventListener("message", (e: MessageEvent) => {
   if (e.data.kind === "capture_health") emit({ __k: "health", v: e.data.detail as CaptureHealthEvent });
 });
 
-// --- Flush queue on page hide — drain IDB here (content script owns the page-origin IDB).
-// Tweets + impressions + health all ride the one durable queue; keys are deleted ONLY after the
-// server confirms the write, so a fast-scroll burst, a dormant SW, or a momentarily-down server
-// no longer loses content (it retries on the next flush). ---
-document.addEventListener("visibilitychange", async () => {
-  if (!document.hidden) return;
-  await queueReady;
-  const rows = await drainQueue();
-  if (!rows.length) return;
-  const { impressions, tweets, health } = partition(rows.map(r => r.value as QueuedEvent));
-  const ok = await send({ kind: "flush", impressions, tweets, health });
-  if (ok) await deleteKeys(rows.map(r => r.key));
-});
+// --- Flush the durable queue to the server. Content script owns the page-origin IDB; the SW does
+// the actual POST (only the extension can reach http://localhost — the HTTPS page is blocked by
+// mixed-content). Keys are deleted ONLY after the server confirms, and we drain in bounded chunks
+// so a large backlog can't wedge into an all-or-nothing batch that never succeeds. ---
+let flushing = false;
+async function flush() {
+  if (flushing) return; // a flush is already in flight — periodic + visibilitychange must not overlap
+  flushing = true;
+  try {
+    await queueReady;
+    const rows = await drainQueue();
+    if (rows.length) {
+      await flushInChunks(rows as { key: IDBValidKey; value: QueuedEvent }[], send, deleteKeys);
+    }
+  } finally {
+    flushing = false;
+  }
+}
+
+// Periodic flush so capture reaches the server during a long scroll session — not held hostage to
+// a tab switch (the prior sole trigger meant a focused tab buffered forever). ponytail: fixed 15s
+// interval; make it adaptive to queue depth only if 15s ever proves too slow under heavy capture.
+setInterval(flush, 15_000);
+// Tab hidden / navigating away — flush immediately so nothing waits a full interval.
+document.addEventListener("visibilitychange", () => { if (document.hidden) flush(); });
+window.addEventListener("pagehide", () => flush());

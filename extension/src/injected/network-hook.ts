@@ -86,6 +86,23 @@ function parseTweetResult(result: Record<string, unknown>): TweetRecord | null {
   };
 }
 
+// Parse a response body and emit any tweets in it. Because we match ALL /graphql/ traffic (not a
+// curated op list), plenty of matched responses are empty, streamed, or non-JSON — those are NORMAL,
+// not capture failures, so a parse miss is swallowed silently. A genuine capture-health signal still
+// fires from extractTweets() when the JSON parses but the tweet SHAPE has drifted (graphql_schema_miss).
+// (The old code called .json() on every match and emitted a hook_error on each failure, flooding the
+// durable queue with thousands of "Unexpected end of JSON input" events — see flush.ts.)
+function isJson(contentType: string | null): boolean {
+  return (contentType ?? "").includes("json");
+}
+function emitTweetsFromBody(body: string): void {
+  if (!body) return;
+  let json: unknown;
+  try { json = JSON.parse(body); } catch { return; }
+  const tweets = extractTweets(json);
+  if (tweets.length) window.postMessage({ __afy: true, kind: "tweets", payload: tweets }, "*");
+}
+
 // --- Fetch hook ---
 
 const _fetch = window.fetch.bind(window);
@@ -95,13 +112,8 @@ window.fetch = async function (...args: Parameters<typeof fetch>) {
 
   const res = await _fetch(...args);
 
-  if (TIMELINE_OP_PATTERNS.test(url)) {
-    res.clone().json().then(json => {
-      const tweets = extractTweets(json);
-      if (tweets.length) window.postMessage({ __afy: true, kind: "tweets", payload: tweets }, "*");
-    }).catch(e => {
-      window.postMessage({ __afy: true, kind: "capture_health", detail: { kind: "hook_error", detail: String(e) } }, "*");
-    });
+  if (TIMELINE_OP_PATTERNS.test(url) && res.ok && isJson(res.headers.get("content-type"))) {
+    res.clone().text().then(emitTweetsFromBody).catch(() => { /* body read/clone failed — not a capture miss */ });
   }
 
   return res;
@@ -121,12 +133,8 @@ XMLHttpRequest.prototype.send = function (...args: unknown[]) {
   const xhr = this as XMLHttpRequest & { __afy_url?: string };
   if (xhr.__afy_url && TIMELINE_OP_PATTERNS.test(xhr.__afy_url)) {
     xhr.addEventListener("load", function () {
-      try {
-        const json = JSON.parse(xhr.responseText);
-        const tweets = extractTweets(json);
-        if (tweets.length) window.postMessage({ __afy: true, kind: "tweets", payload: tweets }, "*");
-      } catch (e) {
-        window.postMessage({ __afy: true, kind: "capture_health", detail: { kind: "hook_error", detail: String(e) } }, "*");
+      if (xhr.status === 200 && isJson(xhr.getResponseHeader("content-type"))) {
+        emitTweetsFromBody(xhr.responseText);
       }
     });
   }
