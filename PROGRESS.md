@@ -5,6 +5,38 @@ Point new sessions at this file + the PRD for full context.
 
 ---
 
+## Pre-M5 label curation (2026-06-27) — positive labels are ready
+
+The product model that emerged: **Twitter stays the user's raw casual scroll (untouched);
+"actually for you" is a SEPARATE calibrated AI-focused digest.** Labels for the digest are
+curated; the user's actual X likes are NEVER modified (all "pruning" is rows in our DB only —
+no X mutations were ever made).
+
+**Positive labels for the digest** = `engagement_labels` (source `like`|`bookmark`) **minus**
+`label_prunes`. Current state:
+- **1,554 kept like-labels + 355 bookmarks ≈ 1,909 positives** (AI/tech-calibrated)
+- `label_prunes` (2,309, append-only, NOT negatives — these are "not a current positive";
+  the negative class stays reserved for report/mute/block): reasons = `age` (pre-2024 cut, 1855),
+  `crypto` (130), `noise` (humor/entertainment/link-only, 261), `non-ai-topic` (finance/politics/
+  sports, 61), `reviewed` (per-tweet drops, 2).
+
+**How labels got here:** harvested the user's full Likes (3,863) + Bookmarks (355) via X GraphQL
+pagination → `engagement_labels`. Tweet TEXT for all kept likes is imported into `tweets`
+(source `dom`) so classification/pruning is durable + server-side (no re-scraping). Age cut to
+2024+, then keyword + heuristic + semantic-ish topic/noise pruning.
+
+**Tables:** `engagement_labels(tweet_id,source,ts)`, `label_prunes(tweet_id,reason,ts)`,
+`reviews(tweet_id,verdict,ts)`. `/prune` review page exists. Counts visible at `GET /status`
+(likes/bookmarks/pruned).
+
+**M5 starting point:** build the label pipeline + offline-replay ranker on these ~1,909 positives.
+IPW/propensity deferred (explicit engagement labels are position-robust — see the IPW note below).
+⚠️ Known issue to fix for ONGOING capture: the extension's live sync (content-script → service
+worker → server) is broken from repeated reloads; harvested labels went in via direct import, but
+fresh dwell/impression capture isn't reaching the server yet.
+
+---
+
 ## Current state (2026-06-23) — dogfood reset, accumulating clean data
 
 M0–M4 done. In an extended dogfood/verification pass the **data** (not the code structure) was
