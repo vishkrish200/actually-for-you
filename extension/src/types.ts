@@ -2,6 +2,7 @@ export interface TweetRecord {
   tweet_id: string;
   author_handle: string;
   author_name: string;
+  author_avatar?: string;   // X's pbs.twimg.com profile-image URL (no rate limit)
   author_id: string;
   text: string;
   media: { type: "photo" | "video" | "gif"; url: string }[];

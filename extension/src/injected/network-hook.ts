@@ -64,10 +64,15 @@ function parseTweetResult(result: Record<string, unknown>): TweetRecord | null {
 
   const mediaItems = ((legacy.extended_entities as Record<string, unknown>)?.media ?? []) as Array<Record<string, unknown>>;
 
+  // Avatar: X moved it from user.legacy.profile_image_url_https into user.avatar.image_url (newer
+  // schema). Read avatar first, legacy fallback. This is X's own pbs.twimg.com CDN — no rate limit.
+  const userAvatar = userResult?.avatar as Record<string, unknown> | undefined;
+
   return {
     tweet_id,
     author_handle: String(userCore?.screen_name ?? userLegacy?.screen_name ?? ""),
     author_name: String(userCore?.name ?? userLegacy?.name ?? ""),
+    author_avatar: String(userAvatar?.image_url ?? userLegacy?.profile_image_url_https ?? ""),
     author_id: String(userResult?.rest_id ?? ""),
     text: String(legacy.full_text ?? legacy.text ?? ""),
     media: mediaItems.map(m => ({
@@ -171,6 +176,7 @@ interface TweetRecord {
   tweet_id: string;
   author_handle: string;
   author_name: string;
+  author_avatar: string;
   author_id: string;
   text: string;
   media: { type: "photo" | "video" | "gif"; url: string }[];
