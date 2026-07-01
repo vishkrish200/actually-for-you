@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { buildFeed } from "./ranker.ts";
+import { buildDigest } from "./digest.ts";
 import { maybeNotify } from "./notify.ts";
 
 const PORT = 2727;
@@ -62,6 +63,7 @@ db.exec(`
 
 // Additive migrations for DBs created before these columns existed (append-only safe).
 try { db.exec("ALTER TABLE tweets ADD COLUMN author_name TEXT"); } catch { /* already present */ }
+try { db.exec("ALTER TABLE tweets ADD COLUMN author_avatar TEXT"); } catch { /* already present */ }
 try { db.exec("ALTER TABLE tweets ADD COLUMN source TEXT DEFAULT 'net'"); } catch { /* already present */ }
 try { db.exec("ALTER TABLE impressions ADD COLUMN reported INTEGER"); } catch { /* already present */ }
 try { db.exec("ALTER TABLE impressions ADD COLUMN negative_feedback INTEGER"); } catch { /* already present */ }
@@ -69,9 +71,9 @@ try { db.exec("ALTER TABLE impressions ADD COLUMN negative_feedback INTEGER"); }
 const stmts = {
   tweet: db.prepare(`
     INSERT OR IGNORE INTO tweets
-      (tweet_id, author_handle, author_name, author_id, text, media, is_thread, created_at,
+      (tweet_id, author_handle, author_name, author_avatar, author_id, text, media, is_thread, created_at,
        likes, rts, replies, views, captured_at, source)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `),
   impression: db.prepare(`
     INSERT OR IGNORE INTO impressions
@@ -114,7 +116,7 @@ function ingestBatch(body: {
     );
     for (const t of tweets) {
       stmts.tweet.run(
-        t.tweet_id, t.author_handle, t.author_name ?? "", t.author_id, t.text,
+        t.tweet_id, t.author_handle, t.author_name ?? "", t.author_avatar ?? "", t.author_id, t.text,
         JSON.stringify(t.media ?? []), t.is_thread ? 1 : 0, t.created_at,
         t.metrics.likes, t.metrics.rts, t.metrics.replies, t.metrics.views ?? null,
         t.captured_at, t.source === "dom" ? "dom" : "net",
@@ -131,8 +133,18 @@ function ingestBatch(body: {
         imp.media_present ? 1 : 0, imp.is_thread ? 1 : 0, imp.char_len,
       );
     }
+    // Health is a DIAGNOSTIC stream — it must never take down behavior/content writes (PRD §5.1
+    // independent failure boundaries). Coerce every field to a bindable type (the injected hook
+    // emitted capture_health without a `ts`, whose undefined can't bind and rolled back the whole
+    // batch) and guard per-row so a malformed event is skipped, not fatal.
     for (const h of body.health ?? []) {
-      stmts.health.run(h.ts, h.kind, h.detail);
+      try {
+        stmts.health.run(
+          String(h.ts ?? new Date().toISOString()),
+          String(h.kind ?? "unknown"),
+          typeof h.detail === "string" ? h.detail : JSON.stringify(h.detail ?? null),
+        );
+      } catch (e) { console.error("[afy-ingest] skipped bad health row:", e); }
     }
     const harvestedAt = new Date().toISOString();
     for (const c of body.confirmed ?? []) {
@@ -147,6 +159,56 @@ function ingestBatch(body: {
 
 const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "Content-Type" };
 
+// ---- avatar cache ----
+// Fetch each handle's real X profile photo from unavatar ONCE, cache to disk, serve locally. The
+// browser hits same-origin /avatar/<handle> (no third-party rate limit on the client — unavatar
+// limits per-IP and a 50-avatar page would trip it); repeat loads (screenshots) are instant from
+// disk. Throttled to 3 concurrent upstream fetches; misses are cached too so we don't re-hammer.
+const AV_DIR = ".avatars";
+fs.mkdirSync(AV_DIR, { recursive: true });
+let avInFlight = 0;
+const avWaiters: (() => void)[] = [];
+function avAcquire(): Promise<void> {
+  return new Promise(res => { if (avInFlight < 3) { avInFlight++; res(); } else avWaiters.push(res); });
+}
+function avRelease() { avInFlight--; const next = avWaiters.shift(); if (next) { avInFlight++; next(); } }
+
+async function serveAvatar(handle: string, res: http.ServerResponse) {
+  const hit = path.join(AV_DIR, handle + ".img");
+  const miss = path.join(AV_DIR, handle + ".miss");
+  if (fs.existsSync(hit)) {
+    res.writeHead(200, { "Content-Type": "image/jpeg", "Cache-Control": "max-age=604800", ...cors });
+    fs.createReadStream(hit).pipe(res); return;
+  }
+  if (fs.existsSync(miss)) { res.writeHead(404, cors); res.end(); return; }
+  // Prefer X's OWN avatar URL captured from GraphQL (pbs.twimg.com — no rate limit). Any one
+  // avatar-bearing tweet from this author gives us the URL for all their tweets. _normal is 48px;
+  // bump to 400x400 for a crisp render. Fall back to unavatar only if we've never captured one.
+  const stored = (db.prepare(
+    `SELECT author_avatar AS a FROM tweets WHERE author_handle = ? AND author_avatar IS NOT NULL
+       AND author_avatar != '' ORDER BY captured_at DESC LIMIT 1`,
+  ).get(handle) as { a: string } | undefined)?.a;
+  const url = stored
+    ? stored.replace(/_normal\.(jpg|jpeg|png|webp|gif)/i, "_400x400.$1")
+    : `https://unavatar.io/x/${handle}`;
+
+  await avAcquire();
+  try {
+    const r = await fetch(url);
+    if (r.ok) {
+      const buf = Buffer.from(await r.arrayBuffer());
+      fs.writeFileSync(hit, buf);
+      res.writeHead(200, { "Content-Type": r.headers.get("content-type") ?? "image/jpeg", "Cache-Control": "max-age=604800", ...cors });
+      res.end(buf);
+    } else {
+      if (r.status === 404) fs.writeFileSync(miss, ""); // only negative-cache genuine misses, NOT 429/5xx
+      res.writeHead(404, cors); res.end();
+    }
+  } catch {
+    res.writeHead(502, cors); res.end(); // transient — don't negative-cache, let it retry next load
+  } finally { avRelease(); }
+}
+
 function readBody(req: http.IncomingMessage): Promise<string> {
   return new Promise(resolve => { let s = ""; req.on("data", c => s += c); req.on("end", () => resolve(s)); });
 }
@@ -155,13 +217,26 @@ export const server = http.createServer(async (req, res) => {
   if (req.method === "OPTIONS") { res.writeHead(204, cors); res.end(); return; }
 
   if (req.method === "GET" && req.url === "/status") {
+    const one = (sql: string) => (db.prepare(sql).get() as any).n;
+    // Freshness: answers "is capture alive RIGHT NOW?". Scroll x.com and watch last_impression go
+    // fresh + impressions_last_hour climb — that's the live signal /status's lifetime totals lack.
+    const lastImpression = (db.prepare("SELECT MAX(ts) as t FROM impressions").get() as any).t as string | null;
+    const minutesSince = lastImpression
+      ? Math.round((Date.now() - Date.parse(lastImpression)) / 60000) : null;
     const counts = {
-      tweets: (db.prepare("SELECT COUNT(*) as n FROM tweets").get() as any).n,
-      impressions: (db.prepare("SELECT COUNT(*) as n FROM impressions").get() as any).n,
-      health: (db.prepare("SELECT COUNT(*) as n FROM capture_health").get() as any).n,
-      likes: (db.prepare("SELECT COUNT(*) as n FROM engagement_labels WHERE source='like'").get() as any).n,
-      bookmarks: (db.prepare("SELECT COUNT(*) as n FROM engagement_labels WHERE source='bookmark'").get() as any).n,
-      pruned: (db.prepare("SELECT COUNT(*) as n FROM label_prunes").get() as any).n,
+      tweets: one("SELECT COUNT(*) as n FROM tweets"),
+      impressions: one("SELECT COUNT(*) as n FROM impressions"),
+      health: one("SELECT COUNT(*) as n FROM capture_health"),
+      likes: one("SELECT COUNT(*) as n FROM engagement_labels WHERE source='like'"),
+      bookmarks: one("SELECT COUNT(*) as n FROM engagement_labels WHERE source='bookmark'"),
+      pruned: one("SELECT COUNT(*) as n FROM label_prunes"),
+      // --- live capture health ---
+      last_impression: lastImpression,
+      minutes_since_last_impression: minutesSince,
+      capture_live: minutesSince !== null && minutesSince <= 10, // arriving within last 10 min
+      impressions_last_hour: one("SELECT COUNT(*) as n FROM impressions WHERE datetime(ts) > datetime('now','-1 hour')"),
+      impressions_today: one("SELECT COUNT(*) as n FROM impressions WHERE date(ts) = date('now')"),
+      last_net_tweet: (db.prepare("SELECT MAX(captured_at) as t FROM tweets WHERE source='net'").get() as any).t,
     };
     res.writeHead(200, { "Content-Type": "application/json", ...cors });
     res.end(JSON.stringify(counts));
@@ -178,11 +253,14 @@ export const server = http.createServer(async (req, res) => {
   if (req.method === "POST" && req.url === "/ingest") {
     const raw = await readBody(req);
     try {
-      ingestBatch(JSON.parse(raw));
+      const body = JSON.parse(raw);
+      console.log(`[afy-ingest] POST /ingest  impressions=${body.impressions?.length ?? 0} tweets=${body.tweets?.length ?? 0} health=${body.health?.length ?? 0}`);
+      ingestBatch(body);
       res.writeHead(200, { "Content-Type": "application/json", ...cors });
       res.end(JSON.stringify({ ok: true }));
       maybeNotify(db).catch(e => console.error("[afy-notify]", e)); // after flush, rate-limited
     } catch (e) {
+      console.error("[afy-ingest] WRITE FAILED:", e); // surfaces the throw that wedges the retry loop
       res.writeHead(400, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: false, error: String(e) }));
     }
@@ -267,6 +345,25 @@ export const server = http.createServer(async (req, res) => {
     `).get() as any).n;
     res.writeHead(200, { "Content-Type": "application/json", ...cors });
     res.end(JSON.stringify({ ids: rows.map(r => r.tweet_id), remaining }));
+    return;
+  }
+
+  const avMatch = req.method === "GET" && req.url?.match(/^\/avatar\/([A-Za-z0-9_]{1,20})$/);
+  if (avMatch) { await serveAvatar(avMatch[1], res); return; }
+
+  // Personalized AI digest: corpus ranked by similarity to your likes (digest.ts). ?days=N to limit
+  // to recently-captured tweets (0 = all). The product surface — independent of the behavioral feed.
+  if (req.method === "GET" && req.url?.startsWith("/digest")) {
+    const url = new URL(req.url, "http://localhost");
+    const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "50"), 200);
+    const days = parseInt(url.searchParams.get("days") ?? "0");
+    const items = buildDigest(db, { limit, days });
+    const profileSize = (db.prepare(`
+      SELECT COUNT(*) AS n FROM engagement_labels e JOIN tweets t ON e.tweet_id = t.tweet_id
+      WHERE e.tweet_id NOT IN (SELECT tweet_id FROM label_prunes) AND t.text IS NOT NULL AND t.text != ''
+    `).get() as any).n;
+    res.writeHead(200, { "Content-Type": "application/json", ...cors });
+    res.end(JSON.stringify({ items, count: items.length, profile_size: profileSize }));
     return;
   }
 

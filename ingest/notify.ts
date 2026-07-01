@@ -81,7 +81,7 @@ async function sendPoke(message: string, key: string): Promise<void> {
   }
 }
 
-async function send(message: string): Promise<void> {
+export async function send(message: string): Promise<void> {
   if (IMESSAGE_TO) { await sendIMessage(message, IMESSAGE_TO); return; }
   const key = process.env.POKE_API_KEY;
   if (key) { await sendPoke(message, key); return; }
