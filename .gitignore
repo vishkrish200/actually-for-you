@@ -4,9 +4,13 @@ dist/
 .DS_Store
 .env
 .env.*
+!.env.example
 ingest/backups/
 
+afy.db
 ingest/afy.db
 
 # stray WXT scaffold (we build with esbuild, not wxt)
 extension/.wxt/
+model.json
+ingest/.avatars/
