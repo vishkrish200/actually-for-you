@@ -37,6 +37,7 @@
 
 <script src="https://platform.twitter.com/widgets.js" charset="utf-8"></script>
 <script>
+const TOKEN = '__AFY_TOKEN__'; // injected by server.ts at serve time — write auth for /review + /prune
 let queue = [];       // ids still to show this session
 let remaining = 0;    // server-side count of unreviewed likes
 let current = null;   // id on screen
@@ -78,8 +79,8 @@ async function act(keep) {
   const id = current;
   remaining = Math.max(0, remaining - 1);
   try {
-    if (keep) await fetch("/review", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tweet_id: id, verdict: 1 }) });
-    else await fetch("/prune", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tweet_id: id, reason: "reviewed" }) });
+    if (keep) await fetch("/review", { method: "POST", headers: { "Content-Type": "application/json", "x-afy-token": TOKEN }, body: JSON.stringify({ tweet_id: id, verdict: 1 }) });
+    else await fetch("/prune", { method: "POST", headers: { "Content-Type": "application/json", "x-afy-token": TOKEN }, body: JSON.stringify({ tweet_id: id, reason: "reviewed" }) });
   } catch (e) {}
   busy = false;
   render();

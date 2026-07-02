@@ -4,6 +4,7 @@
 // keyword" problem doesn't apply). TF-IDF cosine; cosine's length-normalization also neutralizes the
 // char_len confounder for free (PRD §7.2 — length must not earn score).
 import type { DatabaseSync } from "node:sqlite";
+import { hashStr } from "./ranker_v1.ts";
 
 export interface DigestItem {
   tweet_id: string;
@@ -16,6 +17,7 @@ export interface DigestItem {
   replies: number | null;
   views: number | null;
   score: number;
+  lane: "taste" | "explore";
 }
 
 // Tokenize: lowercase words, drop short tokens, URLs, and t.co noise. Hashtags/@handles kept (signal).
@@ -110,8 +112,14 @@ function diversify(items: DigestItem[], lambda = 0.75, limit = 50): DigestItem[]
   return picked;
 }
 
-// The digest: un-liked tweets (optionally recent), ranked by taste similarity, diversified.
-export function buildDigest(db: DatabaseSync, { limit = 50, days = 0 } = {}): DigestItem[] {
+// The digest: un-liked tweets (optionally recent), ranked by taste similarity, diversified,
+// plus an explore slice the taste model did NOT choose (CLAUDE.md invariant: every ranker
+// version carries an explore lane — anti-filter-bubble AND the only low-bias signal source,
+// since a profile can never learn about what it never shows).
+export function buildDigest(
+  db: DatabaseSync,
+  { limit = 50, days = 0, seed = new Date().toISOString().slice(0, 10) } = {},
+): DigestItem[] {
   const m = buildTaste(db);
   const recency = days > 0 ? `AND datetime(captured_at) > datetime('now','-${days} days')` : "";
   const rows = db.prepare(`
@@ -119,15 +127,32 @@ export function buildDigest(db: DatabaseSync, { limit = 50, days = 0 } = {}): Di
     WHERE text IS NOT NULL AND text != ''
       AND tweet_id NOT IN (SELECT tweet_id FROM engagement_labels)
       ${recency}
-  `).all() as Omit<DigestItem, "score">[];
+  `).all() as Omit<DigestItem, "score" | "lane">[];
 
-  const scored = rows
-    .map(r => ({ ...r, score: scoreText(r.text, m) }))
-    // drop link-only / "This" / one-word reply fragments — not worth a slot in a daily read
-    .filter(r => r.score > 0 && tokenize(r.text).length >= 4)
+  // fragment filter applies to every lane — link-only / one-word replies aren't worth a slot
+  const candidates = rows
+    .map(r => ({ ...r, score: scoreText(r.text, m), lane: "taste" as const }))
+    .filter(r => tokenize(r.text).length >= 4);
+
+  const exploreN = Math.max(1, Math.round(limit / 10));
+  const scored = candidates
+    .filter(r => r.score > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, Math.max(limit * 4, 200)); // diversify within a generous head
-  return diversify(scored, 0.75, limit);
+  const picked: DigestItem[] = diversify(scored, 0.75, Math.max(1, limit - exploreN));
+
+  // Explore lane: sampled from candidates the taste head did NOT pick (zero-score included) by a
+  // day-seeded hash — stable within a day, rotates daily, no Math.random. Interleaved, not
+  // appended, so the tail-off-a-list problem can't quietly starve it of reads.
+  const inFeed = new Set(picked.map(p => p.tweet_id));
+  const explore = candidates
+    .filter(r => !inFeed.has(r.tweet_id))
+    .sort((a, b) => hashStr(seed + a.tweet_id) - hashStr(seed + b.tweet_id))
+    .slice(0, exploreN)
+    .map(r => ({ ...r, lane: "explore" as const }));
+  const step = Math.max(1, Math.floor(picked.length / (explore.length + 1)));
+  explore.forEach((e, i) => picked.splice(Math.min((i + 1) * step + i, picked.length), 0, e));
+  return picked;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
@@ -137,6 +162,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   console.log(`\nTop ${items.length} for you (taste-ranked):\n`);
   for (const it of items) {
     const who = it.author_handle ? `@${it.author_handle}` : "(unknown)";
-    console.log(`${it.score.toFixed(3)}  ${who.padEnd(18)} ${it.text.replace(/\s+/g, " ").slice(0, 90)}`);
+    console.log(`${it.score.toFixed(3)} ${it.lane === "explore" ? "✧" : " "} ${who.padEnd(18)} ${it.text.replace(/\s+/g, " ").slice(0, 90)}`);
   }
 }

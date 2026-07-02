@@ -26,19 +26,22 @@ keyword baseline on the non-circular gate.)
 
 A learned ranker ships ONLY if it beats the keyword baseline on the **review-only pool**
 (hand-signed labels) on NDCG@10 AND MAP. Same-era and full pools are supplementary — both
-are confounded (keyword-circular / era-detectable). At n≈44 test labels the gate is noisy:
-pair any verdict with the bootstrap CI (`ranker_emb.ts` prints it); a CI straddling 0 = tied,
-not a win. Don't tune hyperparameters against this gate until n grows — that's fitting noise.
+are confounded (keyword-circular / era-detectable). The gate is small-n noisy: `npm run eval`
+prints a bootstrap 95% CI next to each review-pool MAP plus a (v1 − keyword) diff CI — a diff
+CI straddling 0 = tied, not a win. Don't tune hyperparameters against this gate until n grows —
+that's fitting noise.
 
 ## Two packages, different toolchains (don't mix them up)
 
-- **`extension/`** — esbuild bundling (NOT WXT — that scaffold was removed), **vitest** tests,
-  `web-ext` dev runner. MV3: service worker is ephemeral, durable state in IndexedDB.
-- **`ingest/`** — zero-dependency Node (`node --experimental-strip-types`), **node:test** (NOT
-  vitest, despite the stray vitest.config.ts). Scripts: `npm test`, `npm run eval` (ship gate),
-  `labels`, `digest`, `daily`, `probe`. DB path via `AFY_DB` (default `afy.db`); run from
-  `ingest/`. Embeddings (`ranker_emb.ts`) need local ollama serving `nomic-embed-text`
-  (cached in `emb_cache` table, so re-runs work offline).
+- **`extension/`** — esbuild via `build.sh` (cleans `dist/`, bakes `AFY_TOKEN` into the SW;
+  NOT WXT — that scaffold was removed), **vitest** tests, `web-ext` dev runner. MV3: service
+  worker is ephemeral, durable state in IndexedDB.
+- **`ingest/`** — zero-dependency Node (`node --experimental-strip-types`), **node:test**.
+  Scripts: `npm test`, `npm run eval` (ship gate), `labels`, `digest`, `daily`, `probe`.
+  DB path via `AFY_DB` (default `afy.db`); run from `ingest/`.
+- Write endpoints are token-authed: `AFY_TOKEN` in `ingest/.env.local`, same value baked into
+  the extension by `build.sh`. After rotating it: rebuild + reload the extension BEFORE
+  restarting the server, or capture 401-wedges (batches wait safely in IDB, but it's a stall).
 
 ## Capture surface gotchas (PRD §5)
 

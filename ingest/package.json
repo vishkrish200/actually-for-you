@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node --env-file-if-exists=.env.local --experimental-strip-types server.ts",
-    "test": "node --experimental-strip-types --test server.test.ts ranker.test.ts notify.test.ts m5m6.test.ts digest.test.ts",
+    "test": "node --experimental-strip-types --test server.test.ts m5m6.test.ts digest.test.ts",
     "eval": "node --experimental-strip-types eval.ts",
     "probe": "node --experimental-strip-types probe.ts",
     "labels": "node --experimental-strip-types labels.ts",
@@ -14,7 +14,6 @@
   },
   "devDependencies": {
     "@types/node": "^20",
-    "typescript": "^5",
-    "vitest": "^2.1.9"
+    "typescript": "^5"
   }
 }

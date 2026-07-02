@@ -3,11 +3,15 @@
 
 const INGEST = "http://localhost:2727/ingest";
 
+// Ingest write auth (PRD §5.8) — injected at build time by build.sh from ../ingest/.env.local,
+// "" when unset. Never lives in committed source; a mismatch 401s and the batch waits in IDB.
+declare const __AFY_TOKEN__: string;
+
 async function postToIngest(body: object): Promise<boolean> {
   try {
     const res = await fetch(INGEST, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "x-afy-token": __AFY_TOKEN__ },
       body: JSON.stringify(body),
     });
     return res.ok;

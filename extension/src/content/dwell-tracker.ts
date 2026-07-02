@@ -152,11 +152,9 @@ export class DwellTracker {
     // Engagement clicks
     document.addEventListener("click", this.handleClick.bind(this), true);
 
-    // Hovercard observer
-    new MutationObserver(this.handleHovercard.bind(this)).observe(document.documentElement, {
-      childList: true,
-      subtree: true,
-    });
+    // No hovercard observer: it blanket-attributed "hovercard" to every in-flight tweet (useless
+    // data) at the cost of a second document-wide MutationObserver, and nothing downstream ever
+    // consumed it. profile_expanded still carries the strong signal, clickthrough (SPA nav).
   }
 
   private observeTimeline() {
@@ -383,20 +381,6 @@ export class DwellTracker {
     if (text.includes("report")) state.reported = true;
     else if (text.includes("not interested") || text.includes("mute @") || text.includes("block @")) {
       state.negativeFeedback = true;
-    }
-  }
-
-  private handleHovercard(mutations: MutationRecord[]) {
-    for (const m of mutations) {
-      for (const node of m.addedNodes) {
-        if ((node as HTMLElement).querySelector?.('[data-testid="HoverCard"]')) {
-          // Find which tweet is in focus — nearest article ancestor if possible
-          // ponytail: weak signal, best-effort attribution
-          this.states.forEach(s => {
-            if (s.profileExpanded === "none") s.profileExpanded = "hovercard";
-          });
-        }
-      }
     }
   }
 

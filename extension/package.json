@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "web-ext run --source-dir dist",
-    "build": "cp -r public/* dist/ && npx esbuild src/background/index.ts --bundle --outfile=dist/background.js --format=esm --target=chrome120 && npx esbuild src/content/index.ts --bundle --outfile=dist/content.js --format=iife --target=chrome120 && npx esbuild src/injected/network-hook.ts --bundle --outfile=dist/injected.js --format=iife --target=chrome120",
+    "build": "sh build.sh",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

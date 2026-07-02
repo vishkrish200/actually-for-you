@@ -93,6 +93,7 @@
   <div id="status"></div>
 </div>
 <script>
+const TOKEN = '__AFY_TOKEN__'; // injected by server.ts at serve time — write auth for /review
 let days = 0;
 
 // Avatar: a colored-initial circle (always renders instantly) with the real X profile photo layered
@@ -129,8 +130,9 @@ function fmt(d){ if(!d) return ''; const dt=new Date(d), s=(Date.now()-dt)/1000;
   if(s<86400) return Math.round(s/3600)+'h';
   return dt.toLocaleDateString(undefined,{month:'short',day:'numeric'}); }
 function num(n){ n=Number(n||0); return n>=1e6?(n/1e6).toFixed(1)+'M':n>=1e3?(n/1e3).toFixed(1)+'K':n||''; }
-function pcts(items){ const xs=items.map(i=>i.score),lo=Math.min(...xs),hi=Math.max(...xs);
-  return items.map(i=> hi===lo?92:Math.round(60+39*(i.score-lo)/(hi-lo))); }
+function pcts(items){ const t=items.filter(i=>i.lane!=='explore'); // explore is unscored — keep it out of the band
+  const xs=t.map(i=>i.score),lo=Math.min(...xs),hi=Math.max(...xs);
+  return items.map(i=> i.lane==='explore'?null : hi===lo?92:Math.round(60+39*(i.score-lo)/(hi-lo))); }
 
 async function load(){
   const d = await fetch(`/digest?limit=50&days=${days}`).then(r=>r.json());
@@ -148,7 +150,9 @@ async function load(){
           <span class="name">${name}</span>
           ${handle?`<span class="handle">@${esc(handle)}</span>`:''}
           ${t.created_at?`<span class="time">${fmt(t.created_at)}</span>`:''}
-          <span class="taste" title="cosine similarity to your likes">✦ ${p[i]}%</span>
+          ${t.lane==='explore'
+            ?`<span class="taste" title="explore lane — outside your taste profile, keeps the bubble open">✧ explore</span>`
+            :`<span class="taste" title="cosine similarity to your likes">✦ ${p[i]}%</span>`}
         </div>
         <div class="text">${linkify(t.text)}</div>
         <div class="actions">
@@ -195,7 +199,7 @@ function renderReview(){
     </div>`;
 }
 async function rvVote(v){ const t=rvQueue[rvIdx]; if(!t) return; rvIdx++; rvDone++; renderReview();
-  fetch('/review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tweet_id:t.tweet_id,verdict:v})}).catch(()=>{}); }
+  fetch('/review',{method:'POST',headers:{'Content-Type':'application/json','x-afy-token':TOKEN},body:JSON.stringify({tweet_id:t.tweet_id,verdict:v})}).catch(()=>{}); }
 document.addEventListener('keydown',e=>{ if(!document.getElementById('app').classList.contains('review'))return;
   if(e.key==='ArrowRight')rvVote(1); else if(e.key==='ArrowLeft')rvVote(-1); });
 

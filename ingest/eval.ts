@@ -2,6 +2,8 @@
 // negatives} and measure NDCG@k / MAP. v1 ships ONLY if it beats the AI-keyword lexical
 // baseline (the rule-of-thumb that loosely built the labels) — beating random/recency/char_len
 // is necessary but not sufficient. If v1 loses, that's a real result; we print it, we don't ship.
+// The review gate also prints a paired-bootstrap 95% CI per MAP and on (v1 − keyword): at small n
+// the point estimates are noisy, and a diff CI straddling 0 means TIED, not a loss/win.
 //
 // Note on v0: the existing behavioral ranker (ranker.ts) scores dwell/opened/liked — the
 // held-out candidates here are text-only harvested likes with no impressions, so v0 scores them
@@ -81,9 +83,30 @@ export function splitByTime(rows: LabeledRow[], frac = 0.7): { train: LabeledRow
 export interface PoolResult {
   pool: string;
   n: number; // balanced test-pool size (both classes) — small n = noisy gate, warn on it
-  rows: { name: string; ndcg10: number; ndcg50: number; map: number }[];
+  rows: { name: string; ndcg10: number; ndcg50: number; map: number; mapCI?: [number, number] }[];
   ships: boolean;
+  diffCI?: [lo: number, median: number, hi: number]; // paired bootstrap on (v1 full − keyword) MAP
 }
+
+// Paired bootstrap (ported from the closed M6 embedding experiment): resample the test rows with
+// replacement B times and recompute every scorer's MAP on the SAME resample, so the per-model CIs
+// and the (v1 − keyword) diff CI share sampling noise. Seeded PRNG, no Math.random — the gate must
+// be reproducible run-to-run.
+function bootstrapMaps(test: LabeledRow[], named: [string, (r: LabeledRow) => number][], B = 2000): number[][] {
+  let s = 0x243f6a88;
+  const rand = () => { s = (s + 0x6d2b79f5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  const scored = named.map(([, sc]) => test.map(r => ({ l: r.label, sc: sc(r), id: r.tweet_id })));
+  const maps: number[][] = named.map(() => []);
+  for (let b = 0; b < B; b++) {
+    const pick = Array.from({ length: test.length }, () => Math.floor(rand() * test.length));
+    scored.forEach((rows, i) => {
+      const rels = pick.map(j => rows[j]).sort((a, b2) => b2.sc - a.sc || (a.id < b2.id ? -1 : 1)).map(x => x.l);
+      maps[i].push(averagePrecision(rels));
+    });
+  }
+  return maps;
+}
+const pctile = (xs: number[], p: number) => [...xs].sort((a, b) => a - b)[Math.floor(p * (xs.length - 1))];
 
 export interface EvalResult {
   reviewOnly: PoolResult; // review_pos vs review_neg — hand-signed, NON-CIRCULAR — THE real ship gate
@@ -91,7 +114,7 @@ export interface EvalResult {
   full: PoolResult;       // pos vs all negs — era-confounded, supplementary
 }
 
-function evalPool(pool: string, test: LabeledRow[], v1: Model, v1NoAuthor: Model): PoolResult {
+function evalPool(pool: string, test: LabeledRow[], v1: Model, v1NoAuthor: Model, withCI = false): PoolResult {
   const named: [string, (r: LabeledRow) => number][] = [
     ["random", randomScorer(test)],
     ["recency", recencyScore],
@@ -100,11 +123,20 @@ function evalPool(pool: string, test: LabeledRow[], v1: Model, v1NoAuthor: Model
     ["v1 LR (no author)", (r) => predict(v1NoAuthor, r)],
     ["v1 LR (full)", (r) => predict(v1, r)],
   ];
-  const rows = named.map(([name, s]) => ({ name, ...metrics(test, s) }));
+  const rows: PoolResult["rows"] = named.map(([name, s]) => ({ name, ...metrics(test, s) }));
   const keyword = rows.find(r => r.name.startsWith("keyword"))!;
   const v1full = rows.find(r => r.name === "v1 LR (full)")!;
   const ships = v1full.ndcg10 > keyword.ndcg10 && v1full.map > keyword.map;
-  return { pool, n: test.length, rows, ships };
+  let diffCI: PoolResult["diffCI"];
+  if (withCI && test.length > 0) {
+    const maps = bootstrapMaps(test, named);
+    rows.forEach((r, i) => { r.mapCI = [pctile(maps[i], 0.025), pctile(maps[i], 0.975)]; });
+    const kw = named.findIndex(([n]) => n.startsWith("keyword"));
+    const v1i = named.findIndex(([n]) => n === "v1 LR (full)");
+    const diff = maps[v1i].map((m, b) => m - maps[kw][b]);
+    diffCI = [pctile(diff, 0.025), pctile(diff, 0.5), pctile(diff, 0.975)];
+  }
+  return { pool, n: test.length, rows, ships, diffCI };
 }
 
 // Class-balance a test pool by deterministically downsampling the majority class to the minority
@@ -134,16 +166,20 @@ export function runEval(rows: LabeledRow[]): EvalResult {
   // so the keyword baseline here is near-circular. Kept as a supplementary read, no longer THE gate.
   const sameEraTest = balancePool(test.filter(r => r.kind === "pos" || r.kind === "hard_neg"));
   return {
-    reviewOnly: evalPool("REVIEW-ONLY (hand-signed 👍 vs 👎) — NON-CIRCULAR SHIP GATE", reviewTest, v1, v1NoAuthor),
+    // CI only on the review pool — it's the gate that gets trusted, and the one that's small enough
+    // to need error bars. The supplementary pools are confounded; tighter bars wouldn't make them mean more.
+    reviewOnly: evalPool("REVIEW-ONLY (hand-signed 👍 vs 👎) — NON-CIRCULAR SHIP GATE", reviewTest, v1, v1NoAuthor, true),
     sameEra: evalPool("SAME-ERA (pos vs topical-prune negs) — keyword-curated, supplementary", sameEraTest, v1, v1NoAuthor),
     full: evalPool("FULL (pos vs all negs) — era-confounded, supplementary", test, v1, v1NoAuthor),
   };
 }
 
 function formatPool(p: PoolResult): string {
-  const head = `${"model".padEnd(28)} ${"NDCG@10".padStart(8)} ${"NDCG@50".padStart(8)} ${"MAP".padStart(8)}`;
+  const ciHead = p.rows.some(r => r.mapCI) ? "  MAP 95% CI" : "";
+  const head = `${"model".padEnd(28)} ${"NDCG@10".padStart(8)} ${"NDCG@50".padStart(8)} ${"MAP".padStart(8)}${ciHead}`;
   const body = p.rows.map(r =>
-    `${r.name.padEnd(28)} ${r.ndcg10.toFixed(4).padStart(8)} ${r.ndcg50.toFixed(4).padStart(8)} ${r.map.toFixed(4).padStart(8)}`,
+    `${r.name.padEnd(28)} ${r.ndcg10.toFixed(4).padStart(8)} ${r.ndcg50.toFixed(4).padStart(8)} ${r.map.toFixed(4).padStart(8)}` +
+    (r.mapCI ? `  [${r.mapCI[0].toFixed(3)}, ${r.mapCI[1].toFixed(3)}]` : ""),
   );
   return [`▼ ${p.pool}  (balanced test n=${p.n})`, head, ...body].join("\n");
 }
@@ -159,11 +195,17 @@ export function formatEval(res: EvalResult): string {
     : r.ships
       ? `SHIP ✅  v1 beats keyword on the NON-CIRCULAR review gate (NDCG@10 AND MAP) at n=${r.n}.`
       : `HOLD ⛔  v1 does NOT beat keyword on the review gate at n=${r.n} — do not ship v1.`;
+  const d = r.diffCI;
+  const ciNote = d
+    ? d[0] < 0 && d[2] > 0
+      ? `\n   (v1 − keyword) MAP CI [${d[0].toFixed(3)}, ${d[2].toFixed(3)}] straddles 0 → statistically TIED at n=${r.n}; sign more labels before trusting the verdict either way.`
+      : `\n   (v1 − keyword) MAP CI [${d[0].toFixed(3)}, ${d[2].toFixed(3)}] excludes 0 → the gap is real at n=${r.n}, not sampling noise.`
+    : "";
   return [
     formatPool(res.reviewOnly), "",
     formatPool(res.sameEra), "",
     formatPool(res.full), "",
-    gate,
+    gate + ciNote,
   ].join("\n");
 }
 

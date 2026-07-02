@@ -2,12 +2,15 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { buildFeed } from "./ranker.ts";
 import { buildDigest } from "./digest.ts";
-import { maybeNotify } from "./notify.ts";
 
 const PORT = 2727;
 const DB_PATH = process.env.AFY_DB ?? "afy.db";
+// PRD §5.8 ingest auth. When AFY_TOKEN is set (.env.local), every WRITE endpoint requires a
+// matching x-afy-token header — the extension bakes it in at build (extension/build.sh reads the
+// same .env.local). Unset = open, so a token-less extension can't wedge capture before it's
+// rebuilt + reloaded. Reads stay open: the client is served same-origin (Mac + phone-on-LAN).
+const TOKEN = process.env.AFY_TOKEN ?? "";
 
 export const db = new DatabaseSync(DB_PATH);
 
@@ -157,7 +160,16 @@ function ingestBatch(body: {
   }
 }
 
-const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "Content-Type" };
+// No CORS headers anywhere, deliberately: the extension's service worker fetch is CORS-exempt via
+// manifest host_permissions, and the reading client is served same-origin — so a cross-origin
+// reader can only be someone else's webpage. Denying it the headers is the whole point.
+function authed(req: http.IncomingMessage, res: http.ServerResponse): boolean {
+  if (!TOKEN || req.headers["x-afy-token"] === TOKEN) return true;
+  console.error(`[afy-ingest] 401 ${req.method} ${req.url} — x-afy-token missing/wrong (extension rebuilt + reloaded since the token was set?)`);
+  res.writeHead(401, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ ok: false, error: "bad or missing x-afy-token" }));
+  return false;
+}
 
 // ---- avatar cache ----
 // Fetch each handle's real X profile photo from unavatar ONCE, cache to disk, serve locally. The
@@ -177,10 +189,10 @@ async function serveAvatar(handle: string, res: http.ServerResponse) {
   const hit = path.join(AV_DIR, handle + ".img");
   const miss = path.join(AV_DIR, handle + ".miss");
   if (fs.existsSync(hit)) {
-    res.writeHead(200, { "Content-Type": "image/jpeg", "Cache-Control": "max-age=604800", ...cors });
+    res.writeHead(200, { "Content-Type": "image/jpeg", "Cache-Control": "max-age=604800" });
     fs.createReadStream(hit).pipe(res); return;
   }
-  if (fs.existsSync(miss)) { res.writeHead(404, cors); res.end(); return; }
+  if (fs.existsSync(miss)) { res.writeHead(404); res.end(); return; }
   // Prefer X's OWN avatar URL captured from GraphQL (pbs.twimg.com — no rate limit). Any one
   // avatar-bearing tweet from this author gives us the URL for all their tweets. _normal is 48px;
   // bump to 400x400 for a crisp render. Fall back to unavatar only if we've never captured one.
@@ -198,14 +210,14 @@ async function serveAvatar(handle: string, res: http.ServerResponse) {
     if (r.ok) {
       const buf = Buffer.from(await r.arrayBuffer());
       fs.writeFileSync(hit, buf);
-      res.writeHead(200, { "Content-Type": r.headers.get("content-type") ?? "image/jpeg", "Cache-Control": "max-age=604800", ...cors });
+      res.writeHead(200, { "Content-Type": r.headers.get("content-type") ?? "image/jpeg", "Cache-Control": "max-age=604800" });
       res.end(buf);
     } else {
       if (r.status === 404) fs.writeFileSync(miss, ""); // only negative-cache genuine misses, NOT 429/5xx
-      res.writeHead(404, cors); res.end();
+      res.writeHead(404); res.end();
     }
   } catch {
-    res.writeHead(502, cors); res.end(); // transient — don't negative-cache, let it retry next load
+    res.writeHead(502); res.end(); // transient — don't negative-cache, let it retry next load
   } finally { avRelease(); }
 }
 
@@ -214,8 +226,6 @@ function readBody(req: http.IncomingMessage): Promise<string> {
 }
 
 export const server = http.createServer(async (req, res) => {
-  if (req.method === "OPTIONS") { res.writeHead(204, cors); res.end(); return; }
-
   if (req.method === "GET" && req.url === "/status") {
     const one = (sql: string) => (db.prepare(sql).get() as any).n;
     // Freshness: answers "is capture alive RIGHT NOW?". Scroll x.com and watch last_impression go
@@ -238,27 +248,20 @@ export const server = http.createServer(async (req, res) => {
       impressions_today: one("SELECT COUNT(*) as n FROM impressions WHERE date(ts) = date('now')"),
       last_net_tweet: (db.prepare("SELECT MAX(captured_at) as t FROM tweets WHERE source='net'").get() as any).t,
     };
-    res.writeHead(200, { "Content-Type": "application/json", ...cors });
+    res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(counts));
     return;
   }
 
-  if (req.method === "POST" && req.url === "/log") {
-    const body = await readBody(req);
-    console.log("[afy-sw]", body);
-    res.writeHead(200, cors); res.end();
-    return;
-  }
-
   if (req.method === "POST" && req.url === "/ingest") {
+    if (!authed(req, res)) return;
     const raw = await readBody(req);
     try {
       const body = JSON.parse(raw);
       console.log(`[afy-ingest] POST /ingest  impressions=${body.impressions?.length ?? 0} tweets=${body.tweets?.length ?? 0} health=${body.health?.length ?? 0}`);
       ingestBatch(body);
-      res.writeHead(200, { "Content-Type": "application/json", ...cors });
+      res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
-      maybeNotify(db).catch(e => console.error("[afy-notify]", e)); // after flush, rate-limited
     } catch (e) {
       console.error("[afy-ingest] WRITE FAILED:", e); // surfaces the throw that wedges the retry loop
       res.writeHead(400, { "Content-Type": "application/json" });
@@ -267,8 +270,8 @@ export const server = http.createServer(async (req, res) => {
     return;
   }
   // Review queue: tweets you genuinely dwelled on but haven't signed yet. Built straight from
-  // impressions (NOT buildFeed) so we never elicit labels on the ranker's own output — these are
-  // the ambiguous-magnitude items whose sign only an explicit verdict can settle.
+  // impressions (never from a ranker's output) so we never elicit labels on what we ranked — these
+  // are the ambiguous-magnitude items whose sign only an explicit verdict can settle.
   if (req.method === "GET" && req.url?.startsWith("/review/queue")) {
     const url = new URL(req.url, "http://localhost");
     const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "50"), 100);
@@ -287,12 +290,13 @@ export const server = http.createServer(async (req, res) => {
       ORDER BY trusted_dwell DESC
       LIMIT ?
     `).all(limit);
-    res.writeHead(200, { "Content-Type": "application/json", ...cors });
+    res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ tweets: rows }));
     return;
   }
 
   if (req.method === "POST" && req.url === "/review") {
+    if (!authed(req, res)) return;
     const raw = await readBody(req);
     try {
       const { tweet_id, verdict, ts } = JSON.parse(raw);
@@ -300,10 +304,10 @@ export const server = http.createServer(async (req, res) => {
         throw new Error("tweet_id (string) and verdict (+1|-1) required");
       }
       stmts.review.run(tweet_id, verdict, ts ?? new Date().toISOString());
-      res.writeHead(200, { "Content-Type": "application/json", ...cors });
+      res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
     } catch (e) {
-      res.writeHead(400, { "Content-Type": "application/json", ...cors });
+      res.writeHead(400, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: false, error: String(e) }));
     }
     return;
@@ -311,15 +315,16 @@ export const server = http.createServer(async (req, res) => {
 
   // Prune a tweet from the positive set (used by the like-review tool's "drop" + the bulk age cut).
   if (req.method === "POST" && req.url === "/prune") {
+    if (!authed(req, res)) return;
     const raw = await readBody(req);
     try {
       const { tweet_id, reason } = JSON.parse(raw);
       if (typeof tweet_id !== "string") throw new Error("tweet_id (string) required");
       stmts.prune.run(tweet_id, reason ?? "reviewed", new Date().toISOString());
-      res.writeHead(200, { "Content-Type": "application/json", ...cors });
+      res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
     } catch (e) {
-      res.writeHead(400, { "Content-Type": "application/json", ...cors });
+      res.writeHead(400, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: false, error: String(e) }));
     }
     return;
@@ -351,8 +356,18 @@ export const server = http.createServer(async (req, res) => {
   const avMatch = req.method === "GET" && req.url?.match(/^\/avatar\/([A-Za-z0-9_]{1,20})$/);
   if (avMatch) { await serveAvatar(avMatch[1], res); return; }
 
+  // The review/prune pages POST hand-signed labels — the gold labels the whole eval rests on — so
+  // they carry the same write token as the extension. The server injects it at serve time: anyone
+  // who can load the page same-origin could read it, but a cross-origin page can't (no CORS), and
+  // drive-by label poisoning is exactly what the token exists to stop.
+  const serveHtml = (file: string) => {
+    const html = fs.readFileSync(path.join(import.meta.dirname, file), "utf8").replace("__AFY_TOKEN__", TOKEN);
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end(html);
+  };
+
   // Personalized AI digest: corpus ranked by similarity to your likes (digest.ts). ?days=N to limit
-  // to recently-captured tweets (0 = all). The product surface — independent of the behavioral feed.
+  // to recently-captured tweets (0 = all). The product surface.
   if (req.method === "GET" && req.url?.startsWith("/digest")) {
     const url = new URL(req.url, "http://localhost");
     const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "50"), 200);
@@ -362,74 +377,13 @@ export const server = http.createServer(async (req, res) => {
       SELECT COUNT(*) AS n FROM engagement_labels e JOIN tweets t ON e.tweet_id = t.tweet_id
       WHERE e.tweet_id NOT IN (SELECT tweet_id FROM label_prunes) AND t.text IS NOT NULL AND t.text != ''
     `).get() as any).n;
-    res.writeHead(200, { "Content-Type": "application/json", ...cors });
+    res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ items, count: items.length, profile_size: profileSize }));
     return;
   }
 
-  if (req.method === "GET" && req.url?.startsWith("/feed")) {
-    const url = new URL(req.url, "http://localhost");
-    const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "50"), 200);
-    const offset = parseInt(url.searchParams.get("offset") ?? "0");
-    const sortMode = url.searchParams.get("sort") ?? "dwell";
-
-    if (sortMode === "ranked") {
-      const all = buildFeed(db, 200);
-      const page = all.slice(offset, offset + limit);
-      res.writeHead(200, { "Content-Type": "application/json", ...cors });
-      res.end(JSON.stringify({ tweets: page, total: all.length, limit, offset }));
-      return;
-    }
-
-    const order = sortMode === "time"
-      ? "last_seen DESC, i.tweet_id DESC"
-      : "total_dwell DESC, last_seen DESC, i.tweet_id DESC";
-    const rows = db.prepare(`
-      SELECT
-        i.tweet_id,
-        t.author_handle, t.author_name, t.author_id, t.text, t.media,
-        t.is_thread, t.created_at, t.likes, t.rts, t.replies, t.views,
-        t.captured_at,
-        COALESCE(SUM(i.dwell_ms), 0) as total_dwell,
-        MAX(i.opened_detail)         as opened,
-        MAX(i.liked)                 as liked,
-        MAX(i.ts)                    as last_seen
-      FROM impressions i
-      LEFT JOIN tweets t ON i.tweet_id = t.tweet_id
-      GROUP BY i.tweet_id
-      ORDER BY ${order}
-      LIMIT ? OFFSET ?
-    `).all(limit, offset);
-    const total = (db.prepare("SELECT COUNT(DISTINCT tweet_id) as n FROM impressions").get() as any).n;
-    res.writeHead(200, { "Content-Type": "application/json", ...cors });
-    res.end(JSON.stringify({ tweets: rows, total, limit, offset }));
-    return;
-  }
-
-  const impMatch = req.method === "GET" && req.url?.match(/^\/impressions\/(\d+)$/);
-  if (impMatch) {
-    const rows = db.prepare(`
-      SELECT ts, dwell_ms, flicked, opened_detail, liked, position_in_feed, scroll_velocity_at_entry
-      FROM impressions WHERE tweet_id = ? ORDER BY ts ASC
-    `).all(impMatch[1]);
-    res.writeHead(200, { "Content-Type": "application/json", ...cors });
-    res.end(JSON.stringify(rows));
-    return;
-  }
-
-  if (req.method === "GET" && (req.url === "/" || req.url === "/client")) {
-    const html = fs.readFileSync(path.join(import.meta.dirname, "client.html"));
-    res.writeHead(200, { "Content-Type": "text/html" });
-    res.end(html);
-    return;
-  }
-
-  if (req.method === "GET" && req.url === "/prune") {
-    const html = fs.readFileSync(path.join(import.meta.dirname, "prune.html"));
-    res.writeHead(200, { "Content-Type": "text/html" });
-    res.end(html);
-    return;
-  }
+  if (req.method === "GET" && (req.url === "/" || req.url === "/client")) { serveHtml("client.html"); return; }
+  if (req.method === "GET" && req.url === "/prune") { serveHtml("prune.html"); return; }
 
   res.writeHead(404); res.end();
 });

@@ -5,23 +5,59 @@ Point new sessions at this file + the PRD for full context.
 
 ---
 
-## ▶ RESUME HERE (2026-07-01)
+## ▶ RESUME HERE (2026-07-02)
 
-M6 is SOLIDIFIED → CLOSED (see "M6 SOLIDIFIED" section below). The learned ranker loses to a trivial
-prior on a NON-circular gate (your hand-signed 👍/👎), so the shipped cosine digest stays the product
-ranker. Review labels are now wired into `labels.ts`; every 👍/👎 you sign flows into `npm run eval`.
+M6 CLOSED; the **cosine digest is THE product ranker** and now carries the explore lane itself.
+A ponytail audit was applied (section below): the v0 behavioral lane is DELETED (ranker.ts,
+ranker.test.ts, `GET /feed`, per-flush `maybeNotify` texts — the 08:00 `daily.ts` digest text is
+the single delivery channel), the bootstrap CI is baked into `eval.ts` (the old open thread —
+done), and ingest writes are token-authed (PRD §5.8, finally).
 
-**Verified the eval isn't a lousy point-estimate:** bootstrapped the review gate (n=44) — keyword
-MAP 0.81 [0.64,0.92] vs v1 0.44 [0.28,0.63], CIs barely overlap → the "v1 loses" verdict is robust,
-but CIs are wide and `char_len` (0.79) is statistically tied with keyword (the gate can't yet tell
-"AI topics" from "longer tweets" — needs more signed labels to tighten).
+**Fresh gate verdict with the new CI (2026-07-02, n=44):** HOLD ⛔ — keyword MAP 0.811 vs v1 0.472,
+and the paired (v1 − keyword) CI **[−0.518, −0.111] excludes 0** → the loss is real signal, not
+small-n noise. Stronger than the old "CIs barely overlap" read. Every future 👍/👎 tightens it.
 
-**Open thread (offered, not yet done):** bake the bootstrap 95% CI into `eval.ts` so every run prints
-error bars next to each MAP (auto-tightens as more labels are signed). ~15 lines. Say "do the CI" to build it.
+**ONE ACTIVATION STEP LEFT (ordering matters):** `AFY_TOKEN` is in `.env.local` and already baked
+into the freshly built `extension/dist/`. The live launchd server still runs pre-token code.
+1. Chrome → `chrome://extensions` → reload AFY → refresh the x.com tab (token now sent).
+2. THEN `launchctl kickstart -k gui/$(id -u)/com.afy.ingest` (token now enforced).
+Doing (2) before (1) → 401s; batches wait safely in IDB and drain after (1), but capture stalls
+(`/status` `capture_live` goes false and the server logs the 401 loudly).
 
-**Nothing this session is committed yet** — all M5/M6 work (eval.ts, labels.ts, ranker_v1.ts,
-digest.ts, probe.ts, daily.ts …) is still untracked in the working tree. Runs fine locally against
-`afy.db` (gitignored — holds your captured data + labels).
+Tests green: **24 ingest + 28 extension**; `npm run eval` verdict above. Nothing committed yet —
+M5/M6 work + this audit pass are all in the working tree.
+
+---
+
+## Ponytail audit applied (2026-07-02) — ~800 lines out, one product decision made
+
+Repo-wide over-engineering audit, then applied in full. The product decision: **one delivery
+channel.** The per-flush v0-ranked iMessage texts duplicated the 08:00 digest text with a ranker
+built on signals the M6 probe showed don't predict what you value — and muddied dogfood complaint
+attribution. Deleted with it: `ranker.ts` (235) + `ranker.test.ts` (233) + `GET /feed` + notify's
+`maybeNotify`/`formatDigest`/✦-freshness block (`notify.ts` is now just `send()`, daily.ts its
+only caller).
+
+- **Explore lane moved into `digest.ts`** (the invariant survives the v0 deletion): ~10% of each
+  digest is sampled from candidates the taste head did NOT pick (zero-score included), by a
+  day-seeded hash — rotates daily, deterministic in tests, interleaved (never appended) so it
+  actually gets read. Client badges them **✧ explore** instead of a fake taste-%.
+- **Bootstrap CI ported into `eval.ts`** from the embedding experiment, then `ranker_emb.ts`
+  deleted (its verdict — emb ≈ bigram ≈ still loses to keyword — is recorded in the M6 sections;
+  git keeps the code). Review pool now prints per-model MAP CIs + the (v1 − keyword) diff CI, and
+  the gate line says TIED when the diff CI straddles 0.
+- **Ingest auth (PRD §5.8):** `AFY_TOKEN` in `.env.local`; `x-afy-token` required on the write
+  endpoints (`/ingest`, `/review`, `/prune`) when set. Extension: `build.sh` bakes it into the SW.
+  Review pages get it injected at serve time (they write the gold labels — the thing most worth
+  protecting). ALL CORS headers removed: the SW is CORS-exempt via host_permissions, the client is
+  same-origin (Mac + phone-on-LAN), so cross-origin readers were only ever other people's webpages.
+- **Deleted debug leftovers:** hovercard MutationObserver (document-wide observer writing a
+  blanket-attributed signal nothing consumed), `POST /log`, `GET /impressions/<id>`, stale Jun-20
+  `dist/` subdirs (`build.sh` now cleans dist every build), vitest config + devDep in ingest
+  (tests are node:test; −43 packages).
+
+Net: ~800 lines + 1 dep removed; ingest tests 41 → 24 (the 17 deleted tests covered deleted code;
+digest gained an explore-lane test). CLAUDE.md updated to match (CI pointer, toolchains, token).
 
 ---
 
