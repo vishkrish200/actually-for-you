@@ -40,9 +40,13 @@ function walk(node: unknown, out: TweetRecord[]): void {
     const parsed = parseTweetResult(t);
     if (parsed) out.push(parsed);
     // Also capture the original behind a retweet and the quoted tweet — the dwell tracker may
-    // key the impression to either's ID from the DOM.
-    if (legacy.retweeted_status_result) walk(legacy.retweeted_status_result, out);
-    if (legacy.quoted_status_result) walk(legacy.quoted_status_result, out);
+    // key the impression to either's ID from the DOM. X moved both from legacy.* to the result
+    // level (sibling of legacy) — read both, current location first (same drift-proofing as the
+    // user core/legacy dual read).
+    const rtRef = t.retweeted_status_result ?? legacy.retweeted_status_result;
+    const qtRef = t.quoted_status_result ?? legacy.quoted_status_result;
+    if (rtRef) walk(rtRef, out);
+    if (qtRef) walk(qtRef, out);
     return;
   }
 
@@ -66,8 +70,9 @@ function parseTweetResult(result: Record<string, unknown>): TweetRecord | null {
 
   // Quoted-tweet RELATIONSHIP: walk() already captures the quoted tweet as its own row; here we
   // record which tweet it was quoted by, so the server can join the context back at digest time.
-  // The quoted result may be visibility-wrapped like any other tweet — unwrap before reading rest_id.
-  const quotedRaw = (legacy.quoted_status_result as Record<string, unknown>)?.result as Record<string, unknown> | undefined;
+  // Current X schema puts quoted_status_result at the RESULT level (legacy.* is the old location —
+  // dual read, like everything else in this file). May be visibility-wrapped — unwrap for rest_id.
+  const quotedRaw = ((result.quoted_status_result ?? legacy.quoted_status_result) as Record<string, unknown>)?.result as Record<string, unknown> | undefined;
   const quoted = quotedRaw?.__typename === "TweetWithVisibilityResults" && quotedRaw.tweet
     ? quotedRaw.tweet as Record<string, unknown>
     : quotedRaw;
