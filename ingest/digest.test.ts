@@ -12,6 +12,7 @@ function seed(): DatabaseSync {
       likes INTEGER, rts INTEGER, replies INTEGER, views INTEGER);
     CREATE TABLE engagement_labels (tweet_id TEXT, source TEXT, ts TEXT, PRIMARY KEY(tweet_id,source));
     CREATE TABLE label_prunes (tweet_id TEXT PRIMARY KEY, reason TEXT, ts TEXT);
+    CREATE TABLE reviews (rowid INTEGER PRIMARY KEY AUTOINCREMENT, tweet_id TEXT, verdict INTEGER, ts TEXT);
   `);
   const t = db.prepare("INSERT INTO tweets (tweet_id,author_handle,author_name,text,created_at,captured_at) VALUES (?,?,?,?,?,?)");
   const lab = db.prepare("INSERT INTO engagement_labels VALUES (?,?,?)");
@@ -53,6 +54,14 @@ describe("personalized digest (taste similarity)", () => {
     // a long off-topic tweet must not outrank a short on-topic one purely on length
     const longOff = scoreText("today i went for a long walk in the park and then cooked dinner and watched a film about nothing".repeat(3), m);
     assert.ok(short > longOff, `short on-topic ${short} must beat long off-topic ${longOff}`);
+  });
+
+  it("reviewed tweets leave the digest (👍 and 👎 alike — a vote is a read receipt)", () => {
+    const db = seed();
+    db.prepare("INSERT INTO reviews (tweet_id, verdict, ts) VALUES (?,?,?)").run("C_ai", -1, "2026-07-03");
+    const items = buildDigest(db, { limit: 10 });
+    assert.ok(!items.find(i => i.tweet_id === "C_ai"), "reviewed tweet excluded from every lane");
+    assert.ok(items.length >= 1, "digest still serves the remaining candidates");
   });
 
   it("explore lane: surfaces items the taste ranker would never pick, deterministically per seed", () => {

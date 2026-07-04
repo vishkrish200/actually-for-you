@@ -8,7 +8,8 @@ them append-only in sqlite and serves a ranked daily digest.
 
 **Status lives in [PROGRESS.md](PROGRESS.md) — read its "RESUME HERE" block, don't trust
 milestone claims here.** (M0–M6 done; M6 verdict: HOLD — learned ranker doesn't beat the
-keyword baseline on the non-circular gate.)
+keyword baseline on the non-circular gate. M7–M10 "backscroll build-out" in flight: the roadmap
+section in PROGRESS.md is the plan of record; one phase at a time, user approves between phases.)
 
 ## Critical invariants — never violate
 
@@ -19,6 +20,13 @@ keyword baseline on the non-circular gate.)
 - `char_len` / `media_present` / `is_thread` are **confounder controls**: regressed in during
   training, dropped at predict. Never reward features.
 - The `explore` lane must exist in every ranker version (anti-filter-bubble + low-bias data).
+- Background-polled tweets (`tweets.source='poll'`, M7) are **candidates only** — they must never
+  mint impressions, dwell, or engagement labels, and `'poll'` never overwrites an organic
+  `'net'`/`'dom'` source row.
+- LLM rubric scores (M8) are ranking **features**, never label sources — the AI_LEXICON rule one
+  layer up: an LLM-labeled eval pool is circular for any LLM-scored ranker.
+- Author priors (M9) derive from `engagement_labels` ONLY, never from `reviews` — reviews are
+  eval-only gold; features built from them leak the gate into the model.
 - `afy.db`, `model.json`, `.env.local` are personal data — gitignored, never commit them.
   `ducky-cli/` is an unrelated project accidentally nested here — never commit it.
 
@@ -38,7 +46,8 @@ that's fitting noise.
   worker is ephemeral, durable state in IndexedDB.
 - **`ingest/`** — zero-dependency Node (`node --experimental-strip-types`), **node:test**.
   Scripts: `npm test`, `npm run eval` (ship gate), `labels`, `digest`, `daily`, `probe`.
-  DB path via `AFY_DB` (default `afy.db`); run from `ingest/`.
+  DB path via `AFY_DB` (default `afy.db`); run from `ingest/`. Stays zero-dep: the Anthropic
+  API (M8 rubric) is called via raw `fetch`, no SDK; `ANTHROPIC_API_KEY` lives in `.env.local`.
 - Write endpoints are token-authed: `AFY_TOKEN` in `ingest/.env.local`, same value baked into
   the extension by `build.sh`. After rotating it: rebuild + reload the extension BEFORE
   restarting the server, or capture 401-wedges (batches wait safely in IDB, but it's a stall).

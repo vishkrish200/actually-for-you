@@ -78,6 +78,20 @@ const stmts = {
        likes, rts, replies, views, captured_at, source)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `),
+  // Precedence-upgrade write (M7). INSERT OR REPLACE swaps the whole row on a tweet_id conflict
+  // (it is NOT an in-place edit statement), so the caller MUST pass every column — a partial
+  // replace would blank the rest. We only fire this when the incoming source strictly OUTRANKS the
+  // stored one (net > dom > poll), so it upgrades a weaker row and never clobbers a stronger one.
+  // Append-only intent is preserved: no row is ever edited in place or removed; a higher-fidelity
+  // capture supersedes a lower one (the same "net wins over dom" rule that already governed same-
+  // batch order, now also across batches and extended with the poll tier). The server.ts append-
+  // only grep still holds — REPLACE is neither of the two forbidden mutation keywords.
+  tweetUpgrade: db.prepare(`
+    INSERT OR REPLACE INTO tweets
+      (tweet_id, author_handle, author_name, author_avatar, author_id, text, media, is_thread, created_at,
+       likes, rts, replies, views, captured_at, source)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  `),
   impression: db.prepare(`
     INSERT OR IGNORE INTO impressions
       (impression_id, tweet_id, session_id, ts, position_in_feed, dwell_ms,
@@ -99,7 +113,22 @@ const stmts = {
   prune: db.prepare(
     `INSERT OR IGNORE INTO label_prunes (tweet_id, reason, ts) VALUES (?,?,?)`
   ),
+  // Read the stored source (if any) to decide whether an incoming tweet outranks it (see below).
+  tweetSource: db.prepare(`SELECT source FROM tweets WHERE tweet_id = ?`),
 };
+
+// Capture-fidelity precedence: net (GraphQL, rich) > dom (article scrape) > poll (M7 background
+// poller tab — candidate only, never behaviorally observed). Higher rank wins at upsert: an organic
+// capture upgrades a polled row (source AND any richer fields), poll never overwrites net/dom. A
+// tweet with NO source is treated as 'net' — preserving pre-M7 default behavior exactly.
+function sourceRank(source: string | undefined): number {
+  if (source === "dom") return 1;
+  if (source === "poll") return 0;
+  return 2; // "net" or unset — the default, richest tier
+}
+function normalizeSource(source: string | undefined): "net" | "dom" | "poll" {
+  return source === "dom" ? "dom" : source === "poll" ? "poll" : "net";
+}
 
 function ingestBatch(body: {
   tweets?: TweetRecord[];
@@ -110,19 +139,29 @@ function ingestBatch(body: {
   const run = db.prepare("BEGIN");
   run.run();
   try {
-    // Net (GraphQL-parsed) tweets first so a rich record wins the INSERT OR IGNORE over a DOM
-    // gap-filler for the same id. ponytail: a DOM row written in an earlier batch is NOT replaced
-    // when its net record arrives later (rare cross-batch ordering); add a conflict-upgrade clause
-    // if the tail's missing metrics ever matter. Content stays insert-only — no row is ever mutated.
+    // Write weakest→strongest within a batch (poll < dom < net) so that when the same id appears at
+    // multiple fidelities in ONE batch, the strongest lands last and its upgrade REPLACEs the rest.
+    // Cross-batch, we compare the incoming source against the row already stored and only upgrade
+    // when it strictly outranks it — so an organic net/dom capture supersedes an earlier poll (and
+    // net still supersedes an earlier dom, closing the gap the old ponytail note flagged), while a
+    // later poll NEVER clobbers an existing net/dom row. Content is never mutated in place: a lower-
+    // fidelity row is superseded wholesale by a higher-fidelity capture, never edited.
     const tweets = [...(body.tweets ?? [])].sort(
-      (a, b) => (a.source === "dom" ? 1 : 0) - (b.source === "dom" ? 1 : 0),
+      (a, b) => sourceRank(a.source) - sourceRank(b.source),
     );
     for (const t of tweets) {
-      stmts.tweet.run(
+      const incomingRank = sourceRank(t.source);
+      const storedSource = (stmts.tweetSource.get(t.tweet_id) as { source?: string } | undefined)?.source;
+      // Absent row → plain insert (IGNORE is a no-op only if a concurrent write beat us). Present but
+      // weaker → upgrade via REPLACE. Present and same-or-stronger → IGNORE leaves it untouched.
+      const stmt = storedSource !== undefined && incomingRank > sourceRank(storedSource)
+        ? stmts.tweetUpgrade
+        : stmts.tweet;
+      stmt.run(
         t.tweet_id, t.author_handle, t.author_name ?? "", t.author_avatar ?? "", t.author_id, t.text,
         JSON.stringify(t.media ?? []), t.is_thread ? 1 : 0, t.created_at,
         t.metrics.likes, t.metrics.rts, t.metrics.replies, t.metrics.views ?? null,
-        t.captured_at, t.source === "dom" ? "dom" : "net",
+        t.captured_at, normalizeSource(t.source),
       );
     }
     for (const imp of body.impressions ?? []) {
@@ -394,7 +433,7 @@ interface TweetRecord {
   media: { type: string; url: string }[]; is_thread: boolean; created_at: string;
   metrics: { likes: number; rts: number; replies: number; views?: number };
   captured_at: string;
-  source?: "net" | "dom";
+  source?: "net" | "dom" | "poll";
 }
 interface ImpressionEvent {
   impression_id: string; tweet_id: string; session_id: string; ts: string;

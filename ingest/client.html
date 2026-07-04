@@ -54,6 +54,17 @@
   .act svg { width: 18px; height: 18px; fill: currentColor; }
   .act.r:hover { color: var(--accent); } .act.t:hover { color: var(--rt); } .act.l:hover { color: var(--like); }
 
+  /* in-flow gold labels: 👍/👎 on each digest card */
+  .arow { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
+  .arow .actions { margin-top: 0; flex: 1; }
+  .vote { display: flex; gap: 8px; }
+  .vote button { background: none; border: 1px solid var(--border); border-radius: 9999px;
+    padding: 4px 11px; font-size: 14px; line-height: 1.3; cursor: pointer;
+    filter: grayscale(1); opacity: .7; transition: all .12s; }
+  .vote button:hover, .vote button.on { filter: none; opacity: 1; }
+  .vote .up.on { border-color: var(--rt); background: rgba(0,186,124,0.15); }
+  .vote .dn.on { border-color: var(--like); background: rgba(249,24,128,0.15); }
+
   #status { text-align: center; padding: 40px 16px; color: var(--muted); }
   #status .big { font-size: 20px; font-weight: 800; color: var(--text); margin-bottom: 6px; }
 
@@ -155,14 +166,30 @@ async function load(){
             :`<span class="taste" title="cosine similarity to your likes">✦ ${p[i]}%</span>`}
         </div>
         <div class="text">${linkify(t.text)}</div>
-        <div class="actions">
-          <span class="act r">${ICON.reply}${num(t.replies)}</span>
-          <span class="act t">${ICON.rt}${num(t.rts)}</span>
-          <span class="act l">${ICON.like}${num(t.likes)}</span>
-          <span class="act">${ICON.views}${num(t.views)}</span>
+        <div class="arow">
+          <div class="actions">
+            <span class="act r">${ICON.reply}${num(t.replies)}</span>
+            <span class="act t">${ICON.rt}${num(t.rts)}</span>
+            <span class="act l">${ICON.like}${num(t.likes)}</span>
+            <span class="act">${ICON.views}${num(t.views)}</span>
+          </div>
+          <span class="vote">
+            <button class="up" title="Keep — signs a 👍 gold label" onclick="dgVote(event,'${esc(t.tweet_id)}',1,this)">👍</button>
+            <button class="dn" title="Drop — signs a 👎 gold label" onclick="dgVote(event,'${esc(t.tweet_id)}',-1,this)">👎</button>
+          </span>
         </div>
       </div></div>`;
   }).join('');
+}
+
+// In-flow gold labels: same /review row as review mode (labels.ts takes the latest verdict per
+// tweet, so clicking the other button just re-signs). The card stays for this session; the next
+// digest build drops reviewed tweets — the vote doubles as a read receipt.
+function dgVote(e, id, v, btn){
+  e.stopPropagation();
+  for (const b of btn.parentElement.children) b.classList.toggle('on', b === btn);
+  fetch('/review',{method:'POST',headers:{'Content-Type':'application/json','x-afy-token':TOKEN},
+    body:JSON.stringify({tweet_id:id,verdict:v})}).catch(()=>{});
 }
 
 function setRange(d){

@@ -112,10 +112,13 @@ function diversify(items: DigestItem[], lambda = 0.75, limit = 50): DigestItem[]
   return picked;
 }
 
-// The digest: un-liked tweets (optionally recent), ranked by taste similarity, diversified,
-// plus an explore slice the taste model did NOT choose (CLAUDE.md invariant: every ranker
-// version carries an explore lane — anti-filter-bubble AND the only low-bias signal source,
-// since a profile can never learn about what it never shows).
+// The digest: un-liked, un-reviewed tweets (optionally recent), ranked by taste similarity,
+// diversified, plus an explore slice the taste model did NOT choose (CLAUDE.md invariant: every
+// ranker version carries an explore lane — anti-filter-bubble AND the only low-bias signal source,
+// since a profile can never learn about what it never shows). Reviewed tweets leave the feed:
+// a 👍/👎 (review mode or in-flow on a digest card) is also a read receipt — the taste model
+// doesn't learn from reviews, so a dropped tweet would otherwise rank identically tomorrow
+// and reappear.
 export function buildDigest(
   db: DatabaseSync,
   { limit = 50, days = 0, seed = new Date().toISOString().slice(0, 10) } = {},
@@ -126,6 +129,7 @@ export function buildDigest(
     SELECT tweet_id, author_handle, author_name, text, created_at, likes, rts, replies, views FROM tweets
     WHERE text IS NOT NULL AND text != ''
       AND tweet_id NOT IN (SELECT tweet_id FROM engagement_labels)
+      AND tweet_id NOT IN (SELECT tweet_id FROM reviews)
       ${recency}
   `).all() as Omit<DigestItem, "score" | "lane">[];
 

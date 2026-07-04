@@ -98,6 +98,63 @@ describe("ingest server", () => {
     assert.equal(row.source, "net");
   });
 
+  // ---- M7: source:'poll' (background poller tab candidates) precedence ----
+  // Precedence at upsert is net > dom > poll: a polled row is a candidate only and must be
+  // upgradable by any later organic capture, but must never itself overwrite a net/dom row.
+
+  it("M7: a tweet arriving with source 'poll' stores 'poll'", async () => {
+    const poll = { ...tweet, tweet_id: "poll1", text: "polled", source: "poll" };
+    await post({ tweets: [poll] });
+    const row = db.prepare("SELECT text, source FROM tweets WHERE tweet_id='poll1'").get() as any;
+    assert.equal(row.text, "polled");
+    assert.equal(row.source, "poll");
+  });
+
+  it("M7: 'poll' arriving after an existing 'net' row leaves source AND content intact", async () => {
+    const net = { ...tweet, tweet_id: "np1", text: "net-organic", source: "net",
+      metrics: { likes: 7, rts: 0, replies: 0 } };
+    await post({ tweets: [net] });
+    // A later poll of the same id must be a no-op — it never saw the user, it can't downgrade truth.
+    const poll = { ...tweet, tweet_id: "np1", text: "poll-stale", source: "poll",
+      metrics: { likes: 0, rts: 0, replies: 0 } };
+    await post({ tweets: [poll] });
+    const row = db.prepare("SELECT text, likes, source FROM tweets WHERE tweet_id='np1'").get() as any;
+    assert.equal(row.text, "net-organic");
+    assert.equal(row.likes, 7);
+    assert.equal(row.source, "net");
+  });
+
+  it("M7: 'net' arriving after a 'poll' row upgrades source AND content", async () => {
+    const poll = { ...tweet, tweet_id: "pn1", text: "poll-thin", source: "poll",
+      metrics: { likes: 0, rts: 0, replies: 0 } };
+    await post({ tweets: [poll] });
+    const net = { ...tweet, tweet_id: "pn1", text: "net-rich", source: "net",
+      metrics: { likes: 99, rts: 0, replies: 0 } };
+    await post({ tweets: [net] });
+    const row = db.prepare("SELECT text, likes, source FROM tweets WHERE tweet_id='pn1'").get() as any;
+    assert.equal(row.text, "net-rich");
+    assert.equal(row.likes, 99);
+    assert.equal(row.source, "net"); // organic capture upgraded the polled candidate
+  });
+
+  it("M7: 'dom' arriving after a 'poll' row upgrades it (net > dom > poll)", async () => {
+    const poll = { ...tweet, tweet_id: "pd1", text: "poll-thin", source: "poll" };
+    await post({ tweets: [poll] });
+    const dom = { ...tweet, tweet_id: "pd1", text: "dom-scraped", source: "dom" };
+    await post({ tweets: [dom] });
+    const row = db.prepare("SELECT text, source FROM tweets WHERE tweet_id='pd1'").get() as any;
+    assert.equal(row.text, "dom-scraped");
+    assert.equal(row.source, "dom");
+  });
+
+  it("M7 regression: a tweet with NO source still defaults to 'net'", async () => {
+    // The `tweet` fixture carries no source field — must behave exactly as pre-M7.
+    const bare = { ...tweet, tweet_id: "bare1", text: "no-source" };
+    await post({ tweets: [bare] });
+    const row = db.prepare("SELECT source FROM tweets WHERE tweet_id='bare1'").get() as any;
+    assert.equal(row.source, "net");
+  });
+
   it("harvests confirmed positives from Likes/Bookmarks into engagement_labels", async () => {
     await post({ confirmed: [
       { source: "like", ids: ["lk1", "lk2"] },

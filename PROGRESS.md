@@ -5,27 +5,141 @@ Point new sessions at this file + the PRD for full context.
 
 ---
 
-## ▶ RESUME HERE (2026-07-02)
+## ▶ RESUME HERE (2026-07-03)
 
-M6 CLOSED; the **cosine digest is THE product ranker** and now carries the explore lane itself.
-A ponytail audit was applied (section below): the v0 behavioral lane is DELETED (ranker.ts,
-ranker.test.ts, `GET /feed`, per-flush `maybeNotify` texts — the 08:00 `daily.ts` digest text is
-the single delivery channel), the bootstrap CI is baked into `eval.ts` (the old open thread —
-done), and ingest writes are token-authed (PRD §5.8, finally).
+M6 CLOSED (cosine digest is THE product ranker; explore lane lives inside `digest.ts`).
+**NOW BUILDING: the M7–M10 backscroll build-out — the roadmap section directly below is the plan
+of record.** Process: one phase at a time; an Opus subagent implements to the written plan, the
+main session verifies (tests + diff review), then the user approves before the next phase starts.
 
-**Fresh gate verdict with the new CI (2026-07-02, n=44):** HOLD ⛔ — keyword MAP 0.811 vs v1 0.472,
-and the paired (v1 − keyword) CI **[−0.518, −0.111] excludes 0** → the loss is real signal, not
-small-n noise. Stronger than the old "CIs barely overlap" read. Every future 👍/👎 tightens it.
+Shipped 2026-07-03 (gap 5, uncommitted): **in-flow gold labels** — 👍/👎 pills on every digest
+card in `client.html` POST the same `/review` row as review mode (`labels.ts` latest-verdict-wins
+makes re-votes safe); `buildDigest` now excludes reviewed tweet_ids from every lane (a vote is a
+read receipt — the taste model doesn't learn from reviews, so a dropped tweet would otherwise
+rank identically tomorrow and reappear). Tests: **25 ingest + 28 extension** green. Dogfood
+habit: vote on ✧ explore cards too, or the review pool skews toward taste-lane picks.
 
-**ONE ACTIVATION STEP LEFT (ordering matters):** `AFY_TOKEN` is in `.env.local` and already baked
-into the freshly built `extension/dist/`. The live launchd server still runs pre-token code.
+**Gate verdict (2026-07-02, n=44): HOLD ⛔** — keyword MAP 0.811 vs v1 0.472, paired (v1 − keyword)
+CI **[−0.518, −0.111] excludes 0** → the loss is real signal. Every 👍/👎 tightens it, and in-flow
+voting should grow n much faster now.
+
+**ACTIVATION STEPS STILL PENDING (ordering matters):** `AFY_TOKEN` is in `.env.local` and baked
+into `extension/dist/`. The live launchd server runs pre-token code — and now also predates the
+digest read-receipt exclusion.
 1. Chrome → `chrome://extensions` → reload AFY → refresh the x.com tab (token now sent).
-2. THEN `launchctl kickstart -k gui/$(id -u)/com.afy.ingest` (token now enforced).
+2. THEN `launchctl kickstart -k gui/$(id -u)/com.afy.ingest` (token enforced + new digest live).
 Doing (2) before (1) → 401s; batches wait safely in IDB and drain after (1), but capture stalls
 (`/status` `capture_live` goes false and the server logs the 401 loudly).
 
-Tests green: **24 ingest + 28 extension**; `npm run eval` verdict above. Nothing committed yet —
-M5/M6 work + this audit pass are all in the working tree.
+---
+
+## M7–M10 roadmap (2026-07-03) — the backscroll build-out
+
+Gap analysis vs [backscroll](https://sdan.io/projects/backscroll): Surya's blocker is the honest
+eval — which we already have (the M6 gate). Our gaps are acquisition and scoring breadth. Four
+phases, in order; each phase ends tests-green and stops for user approval. Fine-grained file-level
+choices are re-derived from live code at build time; this section fixes goals, design decisions,
+invariants, and acceptance.
+
+### M7 — Independent candidate acquisition (poller tab)  ✅ BUILT 2026-07-03 (live dogfood pending)
+
+> Built by Opus subagent, independently verified: extension 33/33 (was 28), ingest 30/30 (was 25),
+> `build.sh` clean, poller wiring confirmed in `dist/`. Deviations from plan, all sound:
+> (1) NO `tabs` permission needed — host_permissions already exposes `tab.url` for x.com tabs;
+> (2) poll policy lives in a new pure module `content/poll-source.ts` (tagTweets/shouldEmitImpression),
+> wired at the emit seams in `content/index.ts` — injected hook untouched;
+> (3) server upgrade uses INSERT OR REPLACE gated by strict source-rank comparison (net>dom>poll),
+> which also closed the old cross-batch dom→net ponytail gap. SW alarm/tab plumbing has no unit
+> tests (would need a chrome mock harness) — verified by live dogfood instead.
+> Activation = the same two pending steps below; to force a fast tick, in the SW devtools console:
+> `chrome.alarms.create("afy-poll",{periodInMinutes:0.1})` (reverts to 30 min on next SW restart).
+> Verify: pinned x.com tab appears unfocused; `poll_tick` rows in capture_health;
+> `SELECT COUNT(*) FROM tweets WHERE source='poll'` climbs; impressions JOIN poll-tweets stays 0.
+
+**Problem:** we only rank tweets the user happened to scroll past — X's algorithm is still the
+upstream gatekeeper of what's even eligible. Backscroll pulls ~2,600/day on its own.
+
+**Design (lazy path: reuse the ENTIRE existing capture pipeline; zero API replay):**
+- SW alarm (~30 min; `alarms` permission already granted) finds-or-creates ONE pinned,
+  never-focused `x.com/home` tab (id in `chrome.storage.session`; needs `tabs` permission) and
+  `chrome.tabs.reload()`s it — skipped when `tab.active`. The page fetches its own timeline with
+  perfect first-party headers; the injected hook captures it exactly like an organic visit. No
+  query-ID forgery, no bot-pattern API calls, nothing to rot when X rotates GraphQL internals
+  (capture invariants hold: op-name matching stays untouched).
+- Content script asks the SW at `document_start` "am I the poller tab?" (sender.tab.id vs stored
+  id). If yes: tag outgoing tweets `source:'poll'` and DROP all impressions from that tab (belt;
+  the existing `document.hidden → dwell.pauseAll()` gate is the suspenders). The ms-scale race
+  before the answer arrives is harmless — dwell is visibility-gated anyway.
+- `tweets.source` already exists (`'net'|'dom'`): add `'poll'` at the BOTTOM of the clobber
+  precedence — organic capture upgrades a polled row, poll NEVER overwrites `net`/`dom`.
+- Poll health: emit a `capture_health` event per tick (`kind:'poll_tick'`, tweet count) —
+  breakage must be loud, silence must be diagnosable.
+
+**Acceptance:** both suites green incl. new tests (poller tag + impression drop; source
+precedence; server stores `'poll'`); after reload+restart, `afy.db` accumulates `source='poll'`
+rows within an hour of normal laptop use.
+**Non-goals:** Following-vs-ForYou tab control, cursor pagination, poll-rate tuning, night idling.
+
+### M8 — LLM rubric scorer (the qualityWeight)
+
+**Problem:** TF-IDF cosine can only say "familiar", never "good" — a great tweet on a novel topic
+scores ~0 and only the explore lottery can surface it. Backscroll's `qualityWeight` is an LLM
+grading each tweet against a personal rubric.
+
+**Design:**
+- `RUBRIC.md` (committed — taste philosophy, not a secret): starter scaffold, user edits freely.
+- `ingest/rubric.ts` CLI (`npm run rubric`): scores UNSCORED tweets **text-only** (no author, no
+  metrics — quality must not proxy fame) in batches of ~20/call via **raw fetch** to the Anthropic
+  API (zero-dep invariant; `ANTHROPIC_API_KEY` in `.env.local`), model `claude-haiku-4-5`, strict
+  JSON out, integer 0–10. Append-only `rubric_scores(tweet_id, score, model, rubric_sha, ts)` —
+  `rubric_sha` keys each score to the rubric version that produced it; re-scoring after a rubric
+  edit is a new append, never an update.
+- `daily.ts`: score new tweets before the digest builds (cap ~500/run; Haiku cost ≈ pennies/day).
+- `eval.ts`: new arm **"rubric"** — rank the review pool by rubric score, print vs keyword with
+  the same bootstrap CIs. THE question this phase answers: does an LLM judge beat keyword on the
+  honest gate, where the bigram LR and embeddings both lost?
+- NOT in this phase: wiring rubric into the digest. That's M9 — measure before shipping.
+
+**Invariant (now in CLAUDE.md):** rubric scores are FEATURES, never label sources — the
+AI_LEXICON rule one layer up. An LLM-labeled eval pool would be circular for any LLM-scored ranker.
+**Acceptance:** tests green (scorer parses/appends on a mocked API; schema; eval arm on fixture
+db); `npm run eval` prints the rubric verdict honestly — a HOLD is a real result.
+
+### M9 — Weighted mix with named knobs (the recipe)
+
+**Problem:** one score = no knobs. Backscroll ranks by a weighted blend plus lane shares.
+
+**Design:**
+- Author prior from `engagement_labels` ONLY (`log1p(count)` per author, normalized) — **NEVER
+  from `reviews`**: reviews are eval-only gold; features derived from them leak the gate.
+- `digest.ts`: `final = W.taste·z(cosine) + W.rubric·z(rubric) + W.author·z(author_prior)` with
+  weights as named consts (start 0.5/0.3/0.2). Missing rubric score → z=0 (pool-neutral).
+  Explore lane unchanged (~10%, interleaved).
+- `eval.ts` arm **"mix"** (same formula on the review pool). Gate discipline: pick defaults,
+  eval ONCE, report — no weight grid-search against the small-n pool (that's fitting noise).
+- Client: taste badge tooltip shows the component breakdown (tiny).
+- Stretch (default SKIP): bookmark-similarity lane à la backscroll's 18% — only if bookmark
+  labels are plentiful by then.
+
+**Acceptance:** snapshot test (fixed candidates + weights → asserted order); eval prints keyword /
+v1 / rubric / mix side by side; tests green.
+
+### M10 — Digest feedback instrumentation (own-feed telemetry)
+
+**Problem:** the extension studies you on X, but nothing logs what YOUR digest showed nor what
+you opened — the prerequisite for any "online" ranker comparison (interleaving).
+
+**Design (append-only, additive schema):**
+- `digest_log(digest_date, channel 'web'|'imessage', tweet_id, rank, lane, ts)`: written on every
+  `/digest` serve and by `daily.ts` for the iMessage send list.
+- `digest_opens(tweet_id, ts)`: `client.html` `openTweet()` fires a token-authed
+  `POST /digest/open` (fire-and-forget, same pattern as votes).
+- `npm run funnel`: opens/impressions by lane, rank curve (position bias), votes by lane.
+- NOT in this phase: interleaved A/B ranker comparison — that's the M11 candidate, and it needs
+  M10's data first.
+
+**Acceptance:** tests green (serve logs rows; open endpoint appends; funnel runs on a fixture
+db); a day of dogfood shows web serves + opens accumulating in `afy.db`.
 
 ---
 
@@ -711,7 +825,10 @@ impression) + 12 extension. All pass.
 | GATE | capture live | Capture FIXED 2026-06-28 (server auto-starts, backlog drained); behavioral data now accumulating hands-off |
 | M5 | ✅ built | Label pipeline `labels.ts` (text-based labels; IPW deferred, session-recon n/a for harvested likes) |
 | M6 | ✅ closed | Ranker v1 gate honest & complete. Both learnable paths dead — content LR loses to keyword, behavioral probe (`probe.ts`) shows dwell/opened don't predict likes. Product ranker = cosine digest (`digest.ts`). See "M6 SOLIDIFIED" section. |
-| M7 | — | Online weight updating |
+| M7 | ✅ built 2026-07-03 | Independent candidate acquisition — pinned poller tab, `source='poll'`, capture pipeline reused. Live dogfood + user approval pending |
+| M8 | planned | LLM rubric scorer (qualityWeight): `rubric.ts` + `RUBRIC.md` + eval arm — measure before shipping |
+| M9 | planned | Weighted mix: taste + rubric + author knobs in `digest.ts`, eval arm "mix" |
+| M10 | planned | Own-feed telemetry: `digest_log` + `digest_opens` + funnel report (prereq for interleaving/M11) |
 
 ---
 
