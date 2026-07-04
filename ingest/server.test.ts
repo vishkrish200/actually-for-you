@@ -155,6 +155,19 @@ describe("ingest server", () => {
     assert.equal(row.source, "net");
   });
 
+  it("persists quoted_id so the digest can join quote context back in", async () => {
+    await post({ tweets: [
+      { ...tweet, tweet_id: "qt-orig", text: "the original" },
+      { ...tweet, tweet_id: "qt-ing", text: "quoting it", quoted_id: "qt-orig" },
+    ] });
+    const rows = (db.prepare("SELECT tweet_id, quoted_id FROM tweets WHERE tweet_id LIKE 'qt-%' ORDER BY tweet_id").all() as any[])
+      .map(r => ({ ...r })); // node:sqlite rows are null-prototype — normalize for deepEqual
+    assert.deepEqual(rows, [
+      { tweet_id: "qt-ing", quoted_id: "qt-orig" },
+      { tweet_id: "qt-orig", quoted_id: null }, // absent field binds NULL, not ""
+    ]);
+  });
+
   it("harvests confirmed positives from Likes/Bookmarks into engagement_labels", async () => {
     await post({ confirmed: [
       { source: "like", ids: ["lk1", "lk2"] },

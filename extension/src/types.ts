@@ -6,6 +6,10 @@ export interface TweetRecord {
   author_id: string;
   text: string;
   media: { type: "photo" | "video" | "gif"; url: string }[];
+  // rest_id of the tweet this one quotes, if any. The quoted tweet itself is already captured as
+  // its own row (walk() recurses into quoted_status_result); this field records the RELATIONSHIP
+  // so the digest can render the quoted context inline instead of a context-free quote shell.
+  quoted_id?: string;
   is_thread: boolean;
   created_at: string;
   metrics: { likes: number; rts: number; replies: number; views?: number };

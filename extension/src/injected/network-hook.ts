@@ -7,7 +7,7 @@
 // search, lists, conversation). Op names rotate and multiply; the endpoint path does not.
 const TIMELINE_OP_PATTERNS = /\/graphql\//;
 
-function extractTweets(json: unknown): TweetRecord[] {
+export function extractTweets(json: unknown): TweetRecord[] {
   // X nests tweets at: data → * → instructions → entries → content → itemContent
   // → tweet_results → result → legacy
   const out: TweetRecord[] = [];
@@ -64,6 +64,14 @@ function parseTweetResult(result: Record<string, unknown>): TweetRecord | null {
 
   const mediaItems = ((legacy.extended_entities as Record<string, unknown>)?.media ?? []) as Array<Record<string, unknown>>;
 
+  // Quoted-tweet RELATIONSHIP: walk() already captures the quoted tweet as its own row; here we
+  // record which tweet it was quoted by, so the server can join the context back at digest time.
+  // The quoted result may be visibility-wrapped like any other tweet — unwrap before reading rest_id.
+  const quotedRaw = (legacy.quoted_status_result as Record<string, unknown>)?.result as Record<string, unknown> | undefined;
+  const quoted = quotedRaw?.__typename === "TweetWithVisibilityResults" && quotedRaw.tweet
+    ? quotedRaw.tweet as Record<string, unknown>
+    : quotedRaw;
+
   // Avatar: X moved it from user.legacy.profile_image_url_https into user.avatar.image_url (newer
   // schema). Read avatar first, legacy fallback. This is X's own pbs.twimg.com CDN — no rate limit.
   const userAvatar = userResult?.avatar as Record<string, unknown> | undefined;
@@ -79,6 +87,7 @@ function parseTweetResult(result: Record<string, unknown>): TweetRecord | null {
       type: String(m.type) as "photo" | "video" | "gif",
       url: String(m.media_url_https ?? m.media_url ?? ""),
     })),
+    quoted_id: quoted?.rest_id ? String(quoted.rest_id) : undefined,
     is_thread: Boolean(legacy.self_thread),
     created_at: String(legacy.created_at ?? ""),
     metrics: {

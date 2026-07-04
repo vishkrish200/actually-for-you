@@ -8,7 +8,7 @@ function seed(): DatabaseSync {
   const db = new DatabaseSync(":memory:");
   db.exec(`
     CREATE TABLE tweets (tweet_id TEXT PRIMARY KEY, author_handle TEXT, author_name TEXT,
-      text TEXT, created_at TEXT, captured_at TEXT,
+      text TEXT, media TEXT, quoted_id TEXT, created_at TEXT, captured_at TEXT,
       likes INTEGER, rts INTEGER, replies INTEGER, views INTEGER);
     CREATE TABLE engagement_labels (tweet_id TEXT, source TEXT, ts TEXT, PRIMARY KEY(tweet_id,source));
     CREATE TABLE label_prunes (tweet_id TEXT PRIMARY KEY, reason TEXT, ts TEXT);
@@ -62,6 +62,39 @@ describe("personalized digest (taste similarity)", () => {
     const items = buildDigest(db, { limit: 10 });
     assert.ok(!items.find(i => i.tweet_id === "C_ai"), "reviewed tweet excluded from every lane");
     assert.ok(items.length >= 1, "digest still serves the remaining candidates");
+  });
+
+  it("digest items carry parsed media and resolved quoted context (the inline-render payload)", () => {
+    const db = seed();
+    const t = db.prepare("INSERT INTO tweets (tweet_id,author_handle,author_name,text,media,quoted_id,created_at,captured_at) VALUES (?,?,?,?,?,?,?,?)");
+    // a captured quoted tweet + a quoting tweet pointing at it, with media of its own
+    t.run("Q_orig", "orig", "Orig", "the original llm agent reasoning benchmark thread",
+      '[{"type":"photo","url":"https://pbs.twimg.com/media/orig.jpg"}]', null, "2026-06-01", "2026-06-01");
+    t.run("Q_ing", "quoter", "Quoter", "this llm agent reasoning take matters for models",
+      '[{"type":"video","url":"https://pbs.twimg.com/vid_thumb.jpg"}]', "Q_orig", "2026-06-02", "2026-06-02");
+    // a quoting tweet whose original we never captured
+    t.run("Q_miss", "m", "M", "llm agents reasoning models quoted from nowhere", "[]", "GONE", "2026-06-02", "2026-06-02");
+    const items = buildDigest(db, { limit: 10 });
+    const quoting = items.find(i => i.tweet_id === "Q_ing")!;
+    assert.deepEqual(quoting.media, [{ type: "video", url: "https://pbs.twimg.com/vid_thumb.jpg" }], "media parsed to array");
+    assert.equal((quoting.quoted as any)?.text, "the original llm agent reasoning benchmark thread", "quoted content joined in");
+    assert.deepEqual((quoting.quoted as any)?.media, [{ type: "photo", url: "https://pbs.twimg.com/media/orig.jpg" }], "quoted media included");
+    const missing = items.find(i => i.tweet_id === "Q_miss")!;
+    assert.deepEqual(missing.quoted, { tweet_id: "GONE" }, "uncaptured quote → bare id marker, not null");
+    const plain = items.find(i => i.tweet_id === "C_ai")!;
+    assert.equal(plain.quoted, null, "non-quote tweets carry quoted: null");
+    assert.ok(!("quoted_id" in plain), "raw quoted_id column not leaked into the payload");
+  });
+
+  it("short quote tweets survive the fragment filter (the substance is the quote)", () => {
+    const db = seed();
+    const t = db.prepare("INSERT INTO tweets (tweet_id,author_handle,author_name,text,media,quoted_id,created_at,captured_at) VALUES (?,?,?,?,?,?,?,?)");
+    t.run("Q_orig", "orig", "Orig", "llm agents and reasoning models benchmark results", "[]", null, "2026-06-01", "2026-06-01");
+    t.run("Q_short", "s", "S", "this llm.", "[]", "Q_orig", "2026-06-02", "2026-06-02"); // <4 tokens
+    t.run("F_short", "f", "F", "lol ok.", "[]", null, "2026-06-02", "2026-06-02");       // <4 tokens, no quote
+    const items = buildDigest(db, { limit: 10 });
+    assert.ok(items.find(i => i.tweet_id === "Q_short"), "short QUOTE tweet kept");
+    assert.ok(!items.find(i => i.tweet_id === "F_short"), "short plain fragment still dropped");
   });
 
   it("explore lane: surfaces items the taste ranker would never pick, deterministically per seed", () => {

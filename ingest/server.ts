@@ -2,7 +2,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { buildDigest } from "./digest.ts";
+import { buildDigest, attachQuoted, parseMedia } from "./digest.ts";
 
 const PORT = 2727;
 const DB_PATH = process.env.AFY_DB ?? "afy.db";
@@ -68,15 +68,16 @@ db.exec(`
 try { db.exec("ALTER TABLE tweets ADD COLUMN author_name TEXT"); } catch { /* already present */ }
 try { db.exec("ALTER TABLE tweets ADD COLUMN author_avatar TEXT"); } catch { /* already present */ }
 try { db.exec("ALTER TABLE tweets ADD COLUMN source TEXT DEFAULT 'net'"); } catch { /* already present */ }
+try { db.exec("ALTER TABLE tweets ADD COLUMN quoted_id TEXT"); } catch { /* already present */ }
 try { db.exec("ALTER TABLE impressions ADD COLUMN reported INTEGER"); } catch { /* already present */ }
 try { db.exec("ALTER TABLE impressions ADD COLUMN negative_feedback INTEGER"); } catch { /* already present */ }
 
 const stmts = {
   tweet: db.prepare(`
     INSERT OR IGNORE INTO tweets
-      (tweet_id, author_handle, author_name, author_avatar, author_id, text, media, is_thread, created_at,
+      (tweet_id, author_handle, author_name, author_avatar, author_id, text, media, quoted_id, is_thread, created_at,
        likes, rts, replies, views, captured_at, source)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `),
   // Precedence-upgrade write (M7). INSERT OR REPLACE swaps the whole row on a tweet_id conflict
   // (it is NOT an in-place edit statement), so the caller MUST pass every column — a partial
@@ -88,9 +89,9 @@ const stmts = {
   // only grep still holds — REPLACE is neither of the two forbidden mutation keywords.
   tweetUpgrade: db.prepare(`
     INSERT OR REPLACE INTO tweets
-      (tweet_id, author_handle, author_name, author_avatar, author_id, text, media, is_thread, created_at,
+      (tweet_id, author_handle, author_name, author_avatar, author_id, text, media, quoted_id, is_thread, created_at,
        likes, rts, replies, views, captured_at, source)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `),
   impression: db.prepare(`
     INSERT OR IGNORE INTO impressions
@@ -159,7 +160,7 @@ function ingestBatch(body: {
         : stmts.tweet;
       stmt.run(
         t.tweet_id, t.author_handle, t.author_name ?? "", t.author_avatar ?? "", t.author_id, t.text,
-        JSON.stringify(t.media ?? []), t.is_thread ? 1 : 0, t.created_at,
+        JSON.stringify(t.media ?? []), t.quoted_id ?? null, t.is_thread ? 1 : 0, t.created_at,
         t.metrics.likes, t.metrics.rts, t.metrics.replies, t.metrics.views ?? null,
         t.captured_at, normalizeSource(t.source),
       );
@@ -316,7 +317,7 @@ export const server = http.createServer(async (req, res) => {
     const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "50"), 100);
     const rows = db.prepare(`
       SELECT i.tweet_id,
-        t.author_handle, t.author_name, t.author_id, t.text, t.media,
+        t.author_handle, t.author_name, t.author_id, t.text, t.media, t.quoted_id,
         t.created_at, t.likes, t.rts, t.replies, t.views,
         MAX(CASE WHEN i.flicked=0 AND COALESCE(i.scroll_velocity_at_entry,99) < 5
                  THEN MIN(i.dwell_ms, 60000) ELSE 0 END) AS trusted_dwell,
@@ -329,8 +330,12 @@ export const server = http.createServer(async (req, res) => {
       ORDER BY trusted_dwell DESC
       LIMIT ?
     `).all(limit);
+    // Same inline context as the digest: parsed media + resolved quoted tweet (review mode has
+    // the identical "can't judge without clicking through" friction).
+    const enriched = attachQuoted(db, rows as any[]).map(({ quoted_id: _q, ...r }: any) =>
+      ({ ...r, media: parseMedia(r.media) }));
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ tweets: rows }));
+    res.end(JSON.stringify({ tweets: enriched }));
     return;
   }
 

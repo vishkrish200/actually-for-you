@@ -6,11 +6,25 @@
 import type { DatabaseSync } from "node:sqlite";
 import { hashStr } from "./ranker_v1.ts";
 
+export interface QuotedTweet {
+  tweet_id: string;
+  author_handle: string | null;
+  author_name: string | null;
+  text: string;
+  media: { type: string; url: string }[];
+  created_at: string | null;
+}
+
 export interface DigestItem {
   tweet_id: string;
   author_handle: string | null;
   author_name: string | null;
   text: string;
+  media: { type: string; url: string }[];
+  // quoted context, resolved from quoted_id: the full quoted tweet when we captured it, the bare
+  // marker { tweet_id } when we know it's a quote but never saw the original (render "open on X"),
+  // or null for a plain tweet. Pre-quoted_id rows can't distinguish quote-tweets at all — null.
+  quoted: QuotedTweet | { tweet_id: string } | null;
   created_at: string | null;
   likes: number | null;
   rts: number | null;
@@ -18,6 +32,33 @@ export interface DigestItem {
   views: number | null;
   score: number;
   lane: "taste" | "explore";
+}
+
+// media column is JSON text in sqlite; tolerate legacy null/'' rows.
+export function parseMedia(raw: unknown): { type: string; url: string }[] {
+  if (typeof raw !== "string" || !raw) return [];
+  try { const v = JSON.parse(raw); return Array.isArray(v) ? v : []; } catch { return []; }
+}
+
+// Resolve quoted_id → inline quoted content for a FINAL slate (bounded, ~50 rows — not the corpus).
+export function attachQuoted<T extends { quoted_id?: string | null }>(
+  db: DatabaseSync, items: T[],
+): (T & { quoted: DigestItem["quoted"] })[] {
+  const ids = [...new Set(items.map(i => i.quoted_id).filter(Boolean))] as string[];
+  const found = new Map<string, QuotedTweet>();
+  if (ids.length) {
+    const rows = db.prepare(`
+      SELECT tweet_id, author_handle, author_name, text, media, created_at
+      FROM tweets WHERE tweet_id IN (${ids.map(() => "?").join(",")})
+    `).all(...ids) as any[];
+    for (const r of rows) {
+      found.set(r.tweet_id, { ...r, media: parseMedia(r.media) });
+    }
+  }
+  return items.map(i => ({
+    ...i,
+    quoted: i.quoted_id ? (found.get(i.quoted_id) ?? { tweet_id: i.quoted_id }) : null,
+  }));
 }
 
 // Tokenize: lowercase words, drop short tokens, URLs, and t.co noise. Hashtags/@handles kept (signal).
@@ -126,17 +167,18 @@ export function buildDigest(
   const m = buildTaste(db);
   const recency = days > 0 ? `AND datetime(captured_at) > datetime('now','-${days} days')` : "";
   const rows = db.prepare(`
-    SELECT tweet_id, author_handle, author_name, text, created_at, likes, rts, replies, views FROM tweets
+    SELECT tweet_id, author_handle, author_name, text, media, quoted_id, created_at, likes, rts, replies, views FROM tweets
     WHERE text IS NOT NULL AND text != ''
       AND tweet_id NOT IN (SELECT tweet_id FROM engagement_labels)
       AND tweet_id NOT IN (SELECT tweet_id FROM reviews)
       ${recency}
-  `).all() as Omit<DigestItem, "score" | "lane">[];
+  `).all() as any[];
 
-  // fragment filter applies to every lane — link-only / one-word replies aren't worth a slot
+  // fragment filter applies to every lane — link-only / one-word replies aren't worth a slot,
+  // EXCEPT quote tweets: "this." over a quoted tweet is real curation, the substance is the quote.
   const candidates = rows
-    .map(r => ({ ...r, score: scoreText(r.text, m), lane: "taste" as const }))
-    .filter(r => tokenize(r.text).length >= 4);
+    .map(r => ({ ...r, media: parseMedia(r.media), score: scoreText(r.text, m), lane: "taste" as const }))
+    .filter(r => r.quoted_id || tokenize(r.text).length >= 4);
 
   const exploreN = Math.max(1, Math.round(limit / 10));
   const scored = candidates
@@ -156,7 +198,9 @@ export function buildDigest(
     .map(r => ({ ...r, lane: "explore" as const }));
   const step = Math.max(1, Math.floor(picked.length / (explore.length + 1)));
   explore.forEach((e, i) => picked.splice(Math.min((i + 1) * step + i, picked.length), 0, e));
-  return picked;
+  // Resolve quote context only for the final slate (~limit rows), then drop the raw quoted_id.
+  return attachQuoted(db, picked as (DigestItem & { quoted_id?: string | null })[])
+    .map(({ quoted_id: _qid, ...item }) => item as DigestItem);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
