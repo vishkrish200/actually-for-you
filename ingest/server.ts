@@ -62,6 +62,15 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS label_prunes (
     tweet_id TEXT PRIMARY KEY, reason TEXT, ts TEXT
   );
+  -- M8 LLM rubric scores. An LLM grades each tweet 0–10 against RUBRIC.md (rubric.ts, run by
+  -- daily.ts). These are ranking FEATURES, never labels (CLAUDE.md invariant). Append-only, keyed
+  -- (tweet_id, rubric_sha): rubric_sha ties a score to the rubric version that produced it, so
+  -- editing RUBRIC.md re-scores as new appends rather than mutating rows. rubric.ts owns the same
+  -- CREATE IF NOT EXISTS; this copy keeps the server-owned db carrying the table from first boot.
+  CREATE TABLE IF NOT EXISTS rubric_scores (
+    rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+    tweet_id TEXT, score INTEGER, model TEXT, rubric_sha TEXT, ts TEXT
+  );
 `);
 
 // Additive migrations for DBs created before these columns existed (append-only safe).
