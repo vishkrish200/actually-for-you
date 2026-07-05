@@ -14,8 +14,8 @@ let lastActivity = Date.now();
 const SESSION_IDLE_MS = 30 * 60 * 1000; // ponytail: tunable in M12
 
 // --- M7: am I the poller tab? ---
-// The SW keeps ONE pinned, never-focused x.com/home tab (see background/index.ts) that it reloads
-// every ~30 min to widen the candidate corpus. If THIS tab is that one, its tweets are candidates
+// Every ~30 min the SW opens a short-lived, never-focused background x.com/home tab (closed ~2 min
+// later — see background/index.ts) to widen the candidate corpus. If THIS is it, its tweets are candidates
 // ONLY (source:'poll') and it must mint NO impressions/dwell/engagement — the user never looked at
 // it, so any behavioral signal from it would be fabricated (CLAUDE.md: polled tweets never label).
 //

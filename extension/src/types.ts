@@ -17,8 +17,8 @@ export interface TweetRecord {
   // "net" = parsed from a GraphQL response (rich: metrics, author_id, created_at).
   // "dom" = scraped from the rendered article when X served the tweet from its client cache
   // or fetched it before our network hook installed, so no response crossed the wire to parse.
-  // "poll" = captured by the M7 background poller tab (a pinned, never-focused x.com/home tab the
-  // SW reloads every ~30 min). Same GraphQL hook, same shape — but these are CANDIDATES ONLY: the
+  // "poll" = captured by the M7 background poller tab (a short-lived, never-focused x.com/home tab
+  // the SW opens every ~30 min, closes ~2 min later). Same GraphQL hook, same shape — but these are CANDIDATES ONLY: the
   // user never looked at that tab, so a polled row must never carry an impression/dwell/engagement
   // label (the content script drops all impressions from the poller). Ranked precedence at upsert
   // is net > dom > poll: an organic capture always upgrades a polled row, poll never clobbers net/
