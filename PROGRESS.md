@@ -28,13 +28,20 @@ time, user approves between phases). Token auth + read-receipt digest are LIVE.
 - **NEXT: dogfood the mix for a few days, then user approves M10** (digest feedback
   instrumentation — the funnel telemetry that would make any future online comparison possible).
 
-**Gate verdicts (2026-07-05, balanced n=52, rubric coverage 52/52):** keyword MAP 0.7449
-[0.556, 0.879], NDCG@10 0.9052 — still the champion, HOLD ⛔ stands for everything. **First mix-arm
-verdict: MAP 0.7296 [0.542, 0.883], NDCG@10 0.8201** — beats every component it blends (rubric
-0.6828, digest-cosine taste 0.6450, learned LR ~0.42) but not keyword; the CIs nearly coincide, so
-mix-vs-keyword is statistically TIED at n=52. Weights are the plan defaults (0.5/0.3/0.2), run
-ONCE, not tuned — do not grid-search them against this small-n pool. Tests: **51 ingest** green
-(extension untouched at 38).
+**Gate verdicts (2026-07-06, balanced n=70, rubric coverage 70/70):** dogfood day 1 added 71
+hand-signed reviews (30👍/41👎) — the pool jumped 52 → 70 and got HARDER for everyone: keyword MAP
+0.7449 → **0.6646** [0.506, 0.806] (NDCG@10 0.8512), still the champion, HOLD ⛔ stands. Rubric
+(still the GENERIC starter, sha dd6304) nearly ties keyword on MAP now: **0.6564** [0.486, 0.820].
+**Mix slipped BELOW its own components: MAP 0.6025 vs rubric 0.6564 / taste 0.6273** (at n=52 it
+beat both). Two candidate explanations, unresolved: (a) **serve-selection bias** — the new reviews
+were signed ON mix-ranked digest cards, so 👎s concentrate in the mix's own high-scoring region;
+the served ranker gets penalized hardest by its own served mistakes, an asymmetry the other arms
+don't face (M10's digest_log is what would let us quantify this); (b) the author prior over-serves
+prolific liked authors and ate 👎s. ALL CIs overlap heavily — still statistically tied territory.
+Do NOT re-weight against this pool (n=70 is still fitting-noise range); the principled levers are
+M10 (serve attribution), RUBRIC.md personalization (free, untouched), and more ✧ explore votes
+(counteracts the serve bias). At n=52 the mix beat all components (MAP 0.7296) — that reading
+stands in the M9 note. Tests: **52 ingest** green (extension untouched at 38).
 
 ---
 
