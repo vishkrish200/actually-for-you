@@ -46,8 +46,12 @@ that's fitting noise.
   worker is ephemeral, durable state in IndexedDB.
 - **`ingest/`** — zero-dependency Node (`node --experimental-strip-types`), **node:test**.
   Scripts: `npm test`, `npm run eval` (ship gate), `labels`, `digest`, `daily`, `probe`.
-  DB path via `AFY_DB` (default `afy.db`); run from `ingest/`. Stays zero-dep: the Anthropic
-  API (M8 rubric) is called via raw `fetch`, no SDK; `ANTHROPIC_API_KEY` lives in `.env.local`.
+  DB path via `AFY_DB` (default `afy.db`); run from `ingest/`. Stays zero-dep: the M8 rubric
+  scorer shells out to the local **`claude` CLI in headless mode** (`claude -p`, billed to the
+  user's Claude subscription — NO API key, no SDK, node:child_process is stdlib). Binary via
+  `CLAUDE_BIN` in `.env.local` (default `claude`; launchd contexts need the absolute path,
+  `~/.local/bin/claude`). Scoring must degrade gracefully: CLI missing / quota exhausted → skip
+  the run loudly, never block the digest; missing scores are neutral at rank time.
 - Write endpoints are token-authed: `AFY_TOKEN` in `ingest/.env.local`, same value baked into
   the extension by `build.sh`. After rotating it: rebuild + reload the extension BEFORE
   restarting the server, or capture 401-wedges (batches wait safely in IDB, but it's a stall).

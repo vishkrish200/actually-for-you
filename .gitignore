@@ -14,3 +14,7 @@ ingest/afy.db
 extension/.wxt/
 model.json
 ingest/.avatars/
+
+# local-only
+ducky-cli/
+.claude/
