@@ -5,11 +5,10 @@ Point new sessions at this file + the PRD for full context.
 
 ---
 
-## ▶ RESUME HERE (2026-07-04)
+## ▶ RESUME HERE (2026-07-05)
 
 **M7–M10 backscroll build-out in progress** (roadmap below is the plan of record; one phase at a
-time, Opus subagent implements, main session verifies, user approves between phases). Token auth +
-read-receipt digest are LIVE (activation done 2026-07-03).
+time, user approves between phases). Token auth + read-receipt digest are LIVE.
 
 - **Gap 5 ✅ live** — in-flow 👍/👎 on digest cards; reviewed tweets leave the feed. Vote on
   ✧ explore cards too, or the review pool skews toward taste-lane picks.
@@ -22,16 +21,20 @@ read-receipt digest are LIVE (activation done 2026-07-03).
   build.sh + extension reload to go live.
 - **M8 ✅ built + activated 2026-07-04** — rubric scorer runs on the user's Claude subscription
   (`claude -p`, CLAUDE_BIN pinned in .env.local); daily 08:00 job scores before the digest;
-  review pool fully scored (52/52, starter rubric sha dd6304).
-- **NEXT: user personalizes `RUBRIC.md`** (then `npm run rubric` re-scores under the new sha,
-  `npm run eval` re-judges), and approves M9 (weighted mix).
+  review pool fully scored (52/52, starter rubric sha dd6304). RUBRIC.md personalization still
+  pending (free re-score lever whenever the user edits it).
+- **M9 ✅ built + live 2026-07-05** — digest ranks by the weighted mix (see the M9 section note);
+  server restarted, live payload verified (parts sum to score; unscored rubric renders +0.00).
+- **NEXT: dogfood the mix for a few days, then user approves M10** (digest feedback
+  instrumentation — the funnel telemetry that would make any future online comparison possible).
 
-**Gate verdicts (2026-07-04, balanced n=52):** keyword MAP 0.7449 [0.556, 0.879], NDCG@10 0.9052
-— still the champion, HOLD ⛔ stands for everything. **First rubric-arm verdict (GENERIC starter
-rubric, full 52/52 coverage): MAP 0.6828 [0.501, 0.837], NDCG@10 0.7184** — loses to keyword on
-both, but it's the strongest challenger yet (learned LR sits at MAP ~0.41–0.42). Partial-coverage
-readings overstate the rubric arm (unscored tweets pin to rank-last) — trust only full-coverage
-rows. Tests: **47 ingest + 38 extension** green.
+**Gate verdicts (2026-07-05, balanced n=52, rubric coverage 52/52):** keyword MAP 0.7449
+[0.556, 0.879], NDCG@10 0.9052 — still the champion, HOLD ⛔ stands for everything. **First mix-arm
+verdict: MAP 0.7296 [0.542, 0.883], NDCG@10 0.8201** — beats every component it blends (rubric
+0.6828, digest-cosine taste 0.6450, learned LR ~0.42) but not keyword; the CIs nearly coincide, so
+mix-vs-keyword is statistically TIED at n=52. Weights are the plan defaults (0.5/0.3/0.2), run
+ONCE, not tuned — do not grid-search them against this small-n pool. Tests: **51 ingest** green
+(extension untouched at 38).
 
 ---
 
@@ -131,7 +134,23 @@ AI_LEXICON rule one layer up. An LLM-labeled eval pool would be circular for any
 **Acceptance:** tests green (scorer parses/appends on a mocked API; schema; eval arm on fixture
 db); `npm run eval` prints the rubric verdict honestly — a HOLD is a real result.
 
-### M9 — Weighted mix with named knobs (the recipe)
+### M9 — Weighted mix with named knobs (the recipe)  ✅ BUILT + LIVE 2026-07-05
+
+> Built in the main session (inverse of the M7/M8 pattern), adversarially reviewed by a subagent
+> against this section + CLAUDE.md: **PASS, zero findings** (it independently re-derived the
+> snapshot-test math and attacked the leak-guard SQL). 51/51 ingest tests green. Key build facts:
+> (1) `mixFinal` in digest.ts is THE formula — eval's mix arm calls the same function, so digest
+> and gate can't diverge; z-scores are pool-relative, missing rubric → exactly 0 (eval's −1
+> rank-last sentinel stays confined to the pure-rubric arm). (2) **Leak guard added:** 18 tweets
+> are both liked AND hand-reviewed; buildTaste + buildAuthorPrior now exclude reviewed tweets
+> (verdict-blind membership exclusion — labels.ts precedent), else the eval taste/mix arms score
+> gate rows against their own profile text. Costs ≤18 of ~1,900 profile texts. (3) Taste-lane
+> entry filter generalized `cosine>0` → `mix z>0` (above pool mean); explore mechanics untouched.
+> (4) The eval also gained a "taste (digest cosine)" arm — the pre-M9 status quo the mix must
+> justify itself against. Deferred, flagged by review: no (mix − keyword) bootstrap diff CI yet —
+> add one BEFORE ever treating the mix line as a gate verdict; pre-existing liked+bookmarked
+> double-count in the taste profile noted as a separate follow-up. Author-prior /max normalization
+> skipped as a documented no-op (z downstream is scale-invariant).
 
 **Problem:** one score = no knobs. Backscroll ranks by a weighted blend plus lane shares.
 

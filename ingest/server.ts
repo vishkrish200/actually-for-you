@@ -428,7 +428,9 @@ export const server = http.createServer(async (req, res) => {
     const items = buildDigest(db, { limit, days });
     const profileSize = (db.prepare(`
       SELECT COUNT(*) AS n FROM engagement_labels e JOIN tweets t ON e.tweet_id = t.tweet_id
-      WHERE e.tweet_id NOT IN (SELECT tweet_id FROM label_prunes) AND t.text IS NOT NULL AND t.text != ''
+      WHERE e.tweet_id NOT IN (SELECT tweet_id FROM label_prunes)
+        AND e.tweet_id NOT IN (SELECT tweet_id FROM reviews) -- mirror buildTaste's M9 leak guard
+        AND t.text IS NOT NULL AND t.text != ''
     `).get() as any).n;
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ items, count: items.length, profile_size: profileSize }));

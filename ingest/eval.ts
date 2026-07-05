@@ -8,10 +8,13 @@
 // Note on v0: the existing behavioral ranker (ranker.ts) scores dwell/opened/liked — the
 // held-out candidates here are text-only harvested likes with no impressions, so v0 scores them
 // all ~0. It is NOT a meaningful comparator on this surface; the content baselines below are.
-import type { DatabaseSync } from "node:sqlite";
 import type { LabeledRow } from "./labels.ts";
 import { buildLabels, AI_LEXICON } from "./labels.ts";
 import { train, predict, hashStr, type Model } from "./ranker_v1.ts";
+import { loadRubricScores, type RubricScores } from "./rubric.ts";
+import { scoreText, mixFinal, type TasteModel } from "./digest.ts";
+
+export { loadRubricScores, type RubricScores }; // re-export: pre-M9 home of these was eval.ts
 
 // ---- metrics ----
 // rels: relevance of each item in RANKED order (1 = positive, 0 = negative).
@@ -116,12 +119,16 @@ export interface EvalResult {
   rubricCoverage?: RubricCoverage; // M8: how much of the review pool the LLM has actually scored
 }
 
-// M8 rubric arm. Scores are read from the db (rubric_scores) for the LATEST rubric_sha present, and
-// passed in as a tweet_id→score map. A verdict is only as trustworthy as its coverage, so we carry
-// the coverage numbers alongside and print them next to the arm — a rubric line at 3/44 coverage is
-// visibly weak by construction, not silently mistaken for a real result.
-export interface RubricScores { sha: string | null; scores: Map<string, number> }
+// M8 rubric arm. Scores are read from the db (rubric_scores, via rubric.ts) for the LATEST
+// rubric_sha present, and passed in as a tweet_id→score map. A verdict is only as trustworthy as
+// its coverage, so we carry the coverage numbers alongside and print them next to the arm — a
+// rubric line at 3/44 coverage is visibly weak by construction, not silently mistaken for a result.
 export interface RubricCoverage { scored: number; total: number; sha: string | null }
+
+// M9 mix arm inputs — built from the db by the caller (runEval itself stays db-free). The taste
+// model comes from digest.buildTaste (reviewed tweets excluded from the profile — the leak guard),
+// the prior from digest.buildAuthorPrior (engagement_labels ONLY, never reviews).
+export interface MixInputs { taste: TasteModel; authorPrior: Map<string, number> }
 
 // The rubric scorer as a LabeledRow scorer: an unscored tweet gets -1 so it sorts BELOW every real
 // 0–10 score, deterministically (the ranked()/bootstrap tiebreak on tweet_id keeps ties stable).
@@ -132,7 +139,7 @@ function rubricScorer(rs: RubricScores): (r: LabeledRow) => number {
 
 function evalPool(
   pool: string, test: LabeledRow[], v1: Model, v1NoAuthor: Model,
-  withCI = false, rubric?: RubricScores,
+  withCI = false, extra: [string, (r: LabeledRow) => number][] = [],
 ): PoolResult {
   const named: [string, (r: LabeledRow) => number][] = [
     ["random", randomScorer(test)],
@@ -141,9 +148,9 @@ function evalPool(
     ["keyword (baseline to beat)", lexiconScore],
     ["v1 LR (no author)", (r) => predict(v1NoAuthor, r)],
     ["v1 LR (full)", (r) => predict(v1, r)],
-    // rubric arm added ONLY where a score map is passed (the review pool). THE M8 question: does an
-    // LLM judge beat keyword on the honest gate where the bigram LR and embeddings both lost?
-    ...(rubric ? [["rubric (LLM judge)", rubricScorer(rubric)] as [string, (r: LabeledRow) => number]] : []),
+    // extra arms ride ONLY the review pool (rubric / taste / mix — built in runEval). THE M8/M9
+    // question lives here: does anything beat keyword on the honest gate where the LR lost?
+    ...extra,
   ];
   const rows: PoolResult["rows"] = named.map(([name, s]) => ({ name, ...metrics(test, s) }));
   const keyword = rows.find(r => r.name.startsWith("keyword"))!;
@@ -176,7 +183,7 @@ function balancePool(test: LabeledRow[]): LabeledRow[] {
   return [...keptMaj, ...min];
 }
 
-export function runEval(rows: LabeledRow[], rubric?: RubricScores): EvalResult {
+export function runEval(rows: LabeledRow[], rubric?: RubricScores, mix?: MixInputs): EvalResult {
   const { train: tr, test } = splitByTime(rows);
   const v1 = train(tr, { useAuthor: true });
   const v1NoAuthor = train(tr, { useAuthor: false }); // ablation: author can memorize
@@ -196,43 +203,35 @@ export function runEval(rows: LabeledRow[], rubric?: RubricScores): EvalResult {
     total: reviewTest.length,
     sha: rubric.sha,
   };
+
+  // Review-pool-only arms. rubric = the pure LLM judge (M8, −1 rank-last sentinel for missing).
+  // taste = the pre-M9 shipped ranker (digest cosine) — the status quo the mix must justify itself
+  // against, not just keyword. mix = THE digest formula (digest.mixFinal, weights and all): z-scored
+  // ONCE over the full review test pool and frozen (the bootstrap resamples frozen per-row scores,
+  // same as every other arm); missing rubric is z=0 pool-neutral here, never −1 (the M9 contract).
+  const extra: [string, (r: LabeledRow) => number][] = [];
+  if (rubric) extra.push(["rubric (LLM judge)", rubricScorer(rubric)]);
+  if (mix) {
+    const tasteOf = (r: LabeledRow) => scoreText(r.text, mix.taste);
+    extra.push(["taste (digest cosine)", tasteOf]);
+    const finals = mixFinal(reviewTest.map(r => ({
+      taste: tasteOf(r),
+      rubric: rubric?.scores.get(r.tweet_id) ?? null,
+      author: mix.authorPrior.get(r.author_id) ?? 0,
+    })));
+    const byId = new Map(reviewTest.map((r, i) => [r.tweet_id, finals[i].final]));
+    extra.push(["mix (M9 digest blend)", (r) => byId.get(r.tweet_id) ?? 0]);
+  }
+
   return {
     // CI only on the review pool — it's the gate that gets trusted, and the one that's small enough
     // to need error bars. The supplementary pools are confounded; tighter bars wouldn't make them mean more.
-    // The rubric arm rides ONLY on this pool (the honest gate); the supplementary pools stay as-is.
-    reviewOnly: evalPool("REVIEW-ONLY (hand-signed 👍 vs 👎) — NON-CIRCULAR SHIP GATE", reviewTest, v1, v1NoAuthor, true, rubric),
+    // The extra arms ride ONLY on this pool (the honest gate); the supplementary pools stay as-is.
+    reviewOnly: evalPool("REVIEW-ONLY (hand-signed 👍 vs 👎) — NON-CIRCULAR SHIP GATE", reviewTest, v1, v1NoAuthor, true, extra),
     sameEra: evalPool("SAME-ERA (pos vs topical-prune negs) — keyword-curated, supplementary", sameEraTest, v1, v1NoAuthor),
     full: evalPool("FULL (pos vs all negs) — era-confounded, supplementary", test, v1, v1NoAuthor),
     rubricCoverage,
   };
-}
-
-// Read rubric scores from the db for the LATEST rubric_sha present in rubric_scores (missing → the
-// map simply lacks the id, and rubricScorer sorts it last). "Latest" = the sha of the most recent
-// row by ts; a rubric edit starts a fresh sha, so this always evaluates the current rubric version.
-export function loadRubricScores(db: DatabaseSync): RubricScores {
-  // Tolerate a db that has never been scored: if rubric_scores doesn't exist yet, return empty
-  // WITHOUT creating it — `npm run eval` must be strictly read-only (the scorer/server own the
-  // CREATE). A missing table just means zero coverage, which the arm + coverage line handle.
-  let latest: { rubric_sha: string } | undefined;
-  try {
-    latest = db.prepare(
-      `SELECT rubric_sha FROM rubric_scores ORDER BY ts DESC, rowid DESC LIMIT 1`,
-    ).get() as { rubric_sha: string } | undefined;
-  } catch { return { sha: null, scores: new Map() }; } // "no such table: rubric_scores"
-  const sha = latest?.rubric_sha ?? null;
-  const scores = new Map<string, number>();
-  if (sha) {
-    // Latest score per tweet at this sha (append-only means a re-score could leave >1 row; take the
-    // newest). Scores are integers 0–10.
-    const rows = db.prepare(`
-      SELECT s.tweet_id, s.score FROM rubric_scores s
-      JOIN (SELECT tweet_id, MAX(rowid) mr FROM rubric_scores WHERE rubric_sha = ? GROUP BY tweet_id) l
-        ON s.tweet_id = l.tweet_id AND s.rowid = l.mr
-    `).all(sha) as { tweet_id: string; score: number }[];
-    for (const r of rows) scores.set(r.tweet_id, r.score);
-  }
-  return { sha, scores };
 }
 
 function formatPool(p: PoolResult): string {
@@ -288,8 +287,13 @@ export function formatEval(res: EvalResult): string {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const { DatabaseSync } = await import("node:sqlite");
+  const { buildTaste, buildAuthorPrior } = await import("./digest.ts");
   const db = new DatabaseSync(process.env.AFY_DB ?? "afy.db");
   // loadRubricScores tolerates a missing rubric_scores table (returns empty) so eval stays strictly
   // read-only — it never creates the table. The scorer (rubric.ts) and server own the CREATE.
-  console.log(formatEval(runEval(buildLabels(db), loadRubricScores(db))));
+  // MixInputs mirror exactly what buildDigest ships: same taste profile, same author prior.
+  console.log(formatEval(runEval(
+    buildLabels(db), loadRubricScores(db),
+    { taste: buildTaste(db), authorPrior: buildAuthorPrior(db) },
+  )));
 }

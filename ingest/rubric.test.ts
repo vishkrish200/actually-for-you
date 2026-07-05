@@ -9,6 +9,7 @@ import {
 } from "./rubric.ts";
 import { runEval, loadRubricScores } from "./eval.ts";
 import { buildLabels } from "./labels.ts";
+import { buildTaste, buildAuthorPrior } from "./digest.ts";
 
 // Minimal db with the tables rubric.ts + labels.ts touch. Mirrors the other test files' seed style.
 function seed(): DatabaseSync {
@@ -261,5 +262,34 @@ describe("eval rubric arm", () => {
     assert.equal(res.rubricCoverage!.scored, 0, "nothing scored yet");
     // arm IS present (rubric passed) but scores everything -1 → ties; the point is eval doesn't crash.
     assert.ok(res.reviewOnly.rows.length >= 6, "baseline arms all still present");
+  });
+
+  it("M9: taste + mix arms ride the review pool only, side by side with keyword/v1/rubric", () => {
+    const db = seedReviewPool();
+    const sha = rubricSha(RUBRIC);
+    const ins = db.prepare("INSERT INTO rubric_scores (tweet_id, score, model, rubric_sha, ts) VALUES (?,?,?,?,?)");
+    const reviewed = db.prepare("SELECT tweet_id, verdict FROM reviews").all() as any[];
+    for (const r of reviewed) ins.run(r.tweet_id, r.verdict === 1 ? 9 : 1, "haiku", sha, "2026-07-04T00:00:00Z");
+
+    const mix = { taste: buildTaste(db), authorPrior: buildAuthorPrior(db) };
+    const res = runEval(buildLabels(db), loadRubricScores(db), mix);
+
+    const names = res.reviewOnly.rows.map(r => r.name);
+    assert.ok(names.some(n => n.startsWith("keyword")), "keyword present");
+    assert.ok(names.includes("v1 LR (full)"), "v1 present");
+    assert.ok(names.some(n => n.startsWith("rubric")), "rubric present");
+    assert.ok(names.includes("taste (digest cosine)"), "taste arm present");
+    assert.ok(names.includes("mix (M9 digest blend)"), "mix arm present");
+    // the M9 arms are review-pool-only — the supplementary pools stay untouched
+    for (const pool of [res.sameEra, res.full]) {
+      assert.ok(!pool.rows.some(r => r.name.startsWith("mix") || r.name.startsWith("taste (")),
+        `no M9 arms in ${pool.pool}`);
+    }
+    // this fixture has NO likes → taste cosine and author prior are all-zero → the mix reduces to
+    // 0.3·z(rubric), and the fully-scored, cleanly-separated pool must rank perfectly. This also
+    // pins missing-score handling implicitly: any −1 sentinel leaking into the mix would be a bug
+    // caught by the digest snapshot test; here every row is scored.
+    const mixRow = res.reviewOnly.rows.find(r => r.name === "mix (M9 digest blend)")!;
+    assert.equal(mixRow.map, 1, `mix MAP should be perfect on this fixture, got ${mixRow.map}`);
   });
 });

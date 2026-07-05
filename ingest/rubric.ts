@@ -228,6 +228,39 @@ export async function scoreCandidates(
   return { scored, skipped, alreadyCovered: opts.alreadyCovered ?? 0, sha, model };
 }
 
+// ---- score reader (used by eval.ts arm + digest.ts M9 mix — lives here because this module owns
+// the rubric_scores table; digest and eval both import it without importing each other) ----
+export interface RubricScores { sha: string | null; scores: Map<string, number> }
+
+// Read rubric scores from the db for the LATEST rubric_sha present in rubric_scores (missing → the
+// map simply lacks the id; callers decide what missing means — eval's arm sentinels it to rank-last,
+// the M9 mix treats it as z=0 neutral). "Latest" = the sha of the most recent row by ts; a rubric
+// edit starts a fresh sha, so this always reads the current rubric version.
+export function loadRubricScores(db: DatabaseSync): RubricScores {
+  // Tolerate a db that has never been scored: if rubric_scores doesn't exist yet, return empty
+  // WITHOUT creating it — eval and the digest serve path must stay read-only (the scorer/server
+  // own the CREATE). A missing table just means zero coverage.
+  let latest: { rubric_sha: string } | undefined;
+  try {
+    latest = db.prepare(
+      `SELECT rubric_sha FROM rubric_scores ORDER BY ts DESC, rowid DESC LIMIT 1`,
+    ).get() as { rubric_sha: string } | undefined;
+  } catch { return { sha: null, scores: new Map() }; } // "no such table: rubric_scores"
+  const sha = latest?.rubric_sha ?? null;
+  const scores = new Map<string, number>();
+  if (sha) {
+    // Latest score per tweet at this sha (append-only means a re-score could leave >1 row; take the
+    // newest). Scores are integers 0–10.
+    const rows = db.prepare(`
+      SELECT s.tweet_id, s.score FROM rubric_scores s
+      JOIN (SELECT tweet_id, MAX(rowid) mr FROM rubric_scores WHERE rubric_sha = ? GROUP BY tweet_id) l
+        ON s.tweet_id = l.tweet_id AND s.rowid = l.mr
+    `).all(sha) as { tweet_id: string; score: number }[];
+    for (const r of rows) scores.set(r.tweet_id, r.score);
+  }
+  return { sha, scores };
+}
+
 // ---- CLI entry (npm run rubric) ----
 // Graceful degradation is the whole contract: a missing binary, an auth failure, or an exhausted
 // quota must print ONE loud line and exit 0 having written NOTHING — scores are optional everywhere

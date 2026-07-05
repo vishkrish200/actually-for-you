@@ -196,9 +196,13 @@ function fmt(d){ if(!d) return ''; const dt=new Date(d), s=(Date.now()-dt)/1000;
   if(s<86400) return Math.round(s/3600)+'h';
   return dt.toLocaleDateString(undefined,{month:'short',day:'numeric'}); }
 function num(n){ n=Number(n||0); return n>=1e6?(n/1e6).toFixed(1)+'M':n>=1e3?(n/1e3).toFixed(1)+'K':n||''; }
-function pcts(items){ const t=items.filter(i=>i.lane!=='explore'); // explore is unscored — keep it out of the band
+function pcts(items){ const t=items.filter(i=>i.lane!=='explore'); // explore rides outside the band
   const xs=t.map(i=>i.score),lo=Math.min(...xs),hi=Math.max(...xs);
   return items.map(i=> i.lane==='explore'?null : hi===lo?92:Math.round(60+39*(i.score-lo)/(hi-lo))); }
+// M9 tooltip: the weighted z-contributions that sum to the mix score (parts from digest.ts).
+function mixTip(t){ if(!t.parts) return 'cosine similarity to your likes';
+  const f=x=>(x>=0?'+':'')+Number(x).toFixed(2);
+  return `mix score — taste ${f(t.parts.taste)} · rubric ${f(t.parts.rubric)} · author ${f(t.parts.author)}`; }
 
 async function load(){
   const d = await fetch(`/digest?limit=50&days=${days}`).then(r=>r.json());
@@ -218,7 +222,7 @@ async function load(){
           ${t.created_at?`<span class="time">${fmt(t.created_at)}</span>`:''}
           ${t.lane==='explore'
             ?`<span class="taste" title="explore lane — outside your taste profile, keeps the bubble open">✧ explore</span>`
-            :`<span class="taste" title="cosine similarity to your likes">✦ ${p[i]}%</span>`}
+            :`<span class="taste" title="${mixTip(t)}">✦ ${p[i]}%</span>`}
         </div>
         <div class="text">${linkify(t.text)}</div>
         ${mediaHtml(t.media)}
