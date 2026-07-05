@@ -49,6 +49,17 @@ describe("personalized digest (taste similarity)", () => {
     assert.equal(items[0]?.tweet_id, "C_ai", "AI candidate ranked first");
   });
 
+  it("a tweet liked AND bookmarked weighs its text ONCE in the profile (set semantics, not 2x)", () => {
+    const a = seed();
+    const b = seed();
+    // same tweet, second engagement source — must not move the centroid at all
+    b.prepare("INSERT INTO engagement_labels VALUES (?,?,?)").run("L1", "bookmark", "2026-01-02");
+    const probe = "new llm model beats benchmarks"; // overlaps L1's text, so a 2x L1 would inflate it
+    const sa = scoreText(probe, buildTaste(a));
+    const sb = scoreText(probe, buildTaste(b));
+    assert.ok(Math.abs(sa - sb) < 1e-12, `bookmark added to a liked tweet moved the profile: ${sa} vs ${sb}`);
+  });
+
   it("length does not earn score (cosine normalization controls char_len)", () => {
     const m = buildTaste(seed());
     const short = scoreText("llm agent", m);

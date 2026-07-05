@@ -174,11 +174,15 @@ export function buildTaste(db: DatabaseSync): TasteModel {
   // tweets are the eval gate's test pool — if their text feeds the profile, the eval mix/taste arms
   // score gate rows against their own text. Excluding them mirrors labels.ts ("an explicit verdict
   // overrides the harvested sources") and costs ≤18 of ~1,900 profile texts in the product.
+  // GROUP BY: positives are a SET of tweets (labels.ts / buildAuthorPrior convention) — a tweet
+  // liked AND bookmarked must not weigh its text 2x in the centroid. Engagement-count weighting,
+  // if ever wanted, should be a deliberate feature everywhere, not a JOIN artifact here.
   const likes = (db.prepare(`
     SELECT t.text FROM engagement_labels e JOIN tweets t ON e.tweet_id = t.tweet_id
     WHERE e.tweet_id NOT IN (SELECT tweet_id FROM label_prunes)
       AND e.tweet_id NOT IN (SELECT tweet_id FROM reviews)
       AND t.text IS NOT NULL AND t.text != ''
+    GROUP BY t.tweet_id
   `).all() as { text: string }[]).map(r => r.text);
 
   const profile: Vec = new Map();

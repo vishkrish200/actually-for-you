@@ -427,9 +427,9 @@ export const server = http.createServer(async (req, res) => {
     const days = parseInt(url.searchParams.get("days") ?? "0");
     const items = buildDigest(db, { limit, days });
     const profileSize = (db.prepare(`
-      SELECT COUNT(*) AS n FROM engagement_labels e JOIN tweets t ON e.tweet_id = t.tweet_id
+      SELECT COUNT(DISTINCT e.tweet_id) AS n FROM engagement_labels e JOIN tweets t ON e.tweet_id = t.tweet_id
       WHERE e.tweet_id NOT IN (SELECT tweet_id FROM label_prunes)
-        AND e.tweet_id NOT IN (SELECT tweet_id FROM reviews) -- mirror buildTaste's M9 leak guard
+        AND e.tweet_id NOT IN (SELECT tweet_id FROM reviews) -- mirror buildTaste: leak guard + tweet-set dedupe
         AND t.text IS NOT NULL AND t.text != ''
     `).get() as any).n;
     res.writeHead(200, { "Content-Type": "application/json" });

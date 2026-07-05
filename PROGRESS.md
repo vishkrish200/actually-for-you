@@ -148,9 +148,11 @@ db); `npm run eval` prints the rubric verdict honestly — a HOLD is a real resu
 > entry filter generalized `cosine>0` → `mix z>0` (above pool mean); explore mechanics untouched.
 > (4) The eval also gained a "taste (digest cosine)" arm — the pre-M9 status quo the mix must
 > justify itself against. Deferred, flagged by review: no (mix − keyword) bootstrap diff CI yet —
-> add one BEFORE ever treating the mix line as a gate verdict; pre-existing liked+bookmarked
-> double-count in the taste profile noted as a separate follow-up. Author-prior /max normalization
-> skipped as a documented no-op (z downstream is scale-invariant).
+> add one BEFORE ever treating the mix line as a gate verdict. Author-prior /max normalization
+> skipped as a documented no-op (z downstream is scale-invariant). The pre-existing
+> liked+bookmarked double-count in the taste profile (40 tweets, ~1.4%) was FIXED same-day in the
+> follow-up: buildTaste GROUP BY tweet_id + profile_size COUNT(DISTINCT) — positives are a SET
+> (labels.ts convention); gate re-run: mix unchanged at 4dp, HOLD stands, 52/52 tests.
 
 **Problem:** one score = no knobs. Backscroll ranks by a weighted blend plus lane shares.
 
