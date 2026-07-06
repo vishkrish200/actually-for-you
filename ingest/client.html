@@ -150,6 +150,9 @@ function avatar(name, handle){
 // the tweet unless an actual link was clicked.
 function openTweet(e, id){
   if (e.target.closest('a')) return;
+  // M10 open receipt — fire-and-forget like votes; never blocks or delays opening the tab.
+  fetch('/digest/open',{method:'POST',headers:{'Content-Type':'application/json','x-afy-token':TOKEN},
+    body:JSON.stringify({tweet_id:id})}).catch(()=>{});
   window.open('https://x.com/i/web/status/'+id, '_blank', 'noopener');
 }
 // Quote card opens the QUOTED tweet; stopPropagation so the outer card doesn't also fire.

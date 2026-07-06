@@ -13,7 +13,8 @@ const DAYS = Number(process.env.AFY_DAILY_DAYS ?? 2); // window the teaser pulls
 
 async function teaser(): Promise<string> {
   try {
-    const res = await fetch(`${SERVER}/digest?limit=1&days=${DAYS}`);
+    // channel=imessage: this one-card serve is the iMessage send list — digest_log tags it (M10).
+    const res = await fetch(`${SERVER}/digest?limit=1&days=${DAYS}&channel=imessage`);
     if (!res.ok) return "";
     const { items, count } = await res.json() as { items?: any[]; count?: number };
     const t = items?.[0];

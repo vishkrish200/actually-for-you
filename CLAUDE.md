@@ -45,7 +45,7 @@ that's fitting noise.
   NOT WXT — that scaffold was removed), **vitest** tests, `web-ext` dev runner. MV3: service
   worker is ephemeral, durable state in IndexedDB.
 - **`ingest/`** — zero-dependency Node (`node --experimental-strip-types`), **node:test**.
-  Scripts: `npm test`, `npm run eval` (ship gate), `labels`, `digest`, `daily`, `probe`.
+  Scripts: `npm test`, `npm run eval` (ship gate), `labels`, `digest`, `daily`, `probe`, `funnel`.
   DB path via `AFY_DB` (default `afy.db`); run from `ingest/`. Stays zero-dep: the M8 rubric
   scorer shells out to the local **`claude` CLI in headless mode** (`claude -p`, billed to the
   user's Claude subscription — NO API key, no SDK, node:child_process is stdlib). Binary via

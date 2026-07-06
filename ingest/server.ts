@@ -71,6 +71,22 @@ db.exec(`
     rowid INTEGER PRIMARY KEY AUTOINCREMENT,
     tweet_id TEXT, score INTEGER, model TEXT, rubric_sha TEXT, ts TEXT
   );
+  -- M10 own-feed telemetry, both append-only. digest_log: one row per card per serve — which
+  -- tweet ranked where, in which lane, with what mix score/parts, on which channel
+  -- ('web'|'imessage'). Score parts are captured AT SERVE TIME because they aren't
+  -- reconstructable later (profile/prior/rubric all drift daily). digest_opens: taps in the
+  -- reading client. funnel.ts joins these against reviews to answer "are 👎s concentrated at
+  -- top ranks / in a lane / on high-author-prior cards?" — and they're the prereq for any
+  -- future online ranker comparison (M11 interleaving).
+  CREATE TABLE IF NOT EXISTS digest_log (
+    rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+    digest_date TEXT, channel TEXT, tweet_id TEXT, rank INTEGER, lane TEXT,
+    score REAL, parts TEXT, ts TEXT
+  );
+  CREATE TABLE IF NOT EXISTS digest_opens (
+    rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+    tweet_id TEXT, ts TEXT
+  );
 `);
 
 // Additive migrations for DBs created before these columns existed (append-only safe).
@@ -125,7 +141,29 @@ const stmts = {
   ),
   // Read the stored source (if any) to decide whether an incoming tweet outranks it (see below).
   tweetSource: db.prepare(`SELECT source FROM tweets WHERE tweet_id = ?`),
+  digestLog: db.prepare(
+    `INSERT INTO digest_log (digest_date, channel, tweet_id, rank, lane, score, parts, ts) VALUES (?,?,?,?,?,?,?,?)`
+  ),
+  digestOpen: db.prepare(
+    `INSERT INTO digest_opens (tweet_id, ts) VALUES (?,?)`
+  ),
 };
+
+// M10: append the served slate. Telemetry must never take down the product — a logging failure
+// is loud but the digest still serves. Every serve logs (page reloads included); funnel.ts
+// dedupes to first-serve per tweet at analysis time, append-only stays simple here.
+function logServes(items: { tweet_id: string; lane: string; score: number; parts: unknown }[], channel: "web" | "imessage") {
+  const ts = new Date().toISOString();
+  db.prepare("BEGIN").run();
+  try {
+    items.forEach((it, i) =>
+      stmts.digestLog.run(ts.slice(0, 10), channel, it.tweet_id, i + 1, it.lane, it.score, JSON.stringify(it.parts), ts));
+    db.prepare("COMMIT").run();
+  } catch (e) {
+    db.prepare("ROLLBACK").run();
+    console.error("[afy-ingest] digest_log write failed (serve continues):", e);
+  }
+}
 
 // Capture-fidelity precedence: net (GraphQL, rich) > dom (article scrape) > poll (M7 background
 // poller tab — candidate only, never behaviorally observed). Higher rank wins at upsert: an organic
@@ -421,11 +459,34 @@ export const server = http.createServer(async (req, res) => {
 
   // Personalized AI digest: corpus ranked by similarity to your likes (digest.ts). ?days=N to limit
   // to recently-captured tweets (0 = all). The product surface.
+  // M10 open receipts from the reading client (fire-and-forget in openTweet, same pattern as
+  // votes). Token-authed like every write. Opens on never-served tweets (review mode, quoted
+  // cards) land here too — harmless, funnel.ts joins through digest_log so strays don't count.
+  if (req.method === "POST" && req.url === "/digest/open") {
+    if (!authed(req, res)) return;
+    const raw = await readBody(req);
+    try {
+      const { tweet_id, ts } = JSON.parse(raw);
+      if (typeof tweet_id !== "string" || !tweet_id) throw new Error("tweet_id (string) required");
+      stmts.digestOpen.run(tweet_id, ts ?? new Date().toISOString());
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    } catch (e) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: String(e) }));
+    }
+    return;
+  }
+
   if (req.method === "GET" && req.url?.startsWith("/digest")) {
     const url = new URL(req.url, "http://localhost");
     const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "50"), 200);
     const days = parseInt(url.searchParams.get("days") ?? "0");
+    // daily.ts tags its teaser fetch ?channel=imessage — that one-card serve IS the iMessage
+    // send list, so it logs under its real channel. Everything else is the web client.
+    const channel = url.searchParams.get("channel") === "imessage" ? "imessage" : "web";
     const items = buildDigest(db, { limit, days });
+    logServes(items, channel);
     const profileSize = (db.prepare(`
       SELECT COUNT(DISTINCT e.tweet_id) AS n FROM engagement_labels e JOIN tweets t ON e.tweet_id = t.tweet_id
       WHERE e.tweet_id NOT IN (SELECT tweet_id FROM label_prunes)

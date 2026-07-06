@@ -203,3 +203,62 @@ describe("ingest server", () => {
     assert.equal(n, 1);
   });
 });
+
+// ---- M10: own-feed telemetry (digest_log serves + digest_opens receipts) ----
+function req(method: string, urlPath: string, body?: unknown): Promise<{ status: number; json: any }> {
+  return new Promise((resolve, reject) => {
+    const data = body === undefined ? "" : JSON.stringify(body);
+    const r = http.request({ port: PORT, path: urlPath, method,
+      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) },
+    }, res => {
+      let raw = "";
+      res.on("data", c => { raw += c; });
+      res.on("end", () => resolve({ status: res.statusCode!, json: raw ? JSON.parse(raw) : null }));
+    });
+    r.on("error", reject);
+    r.end(data);
+  });
+}
+
+describe("M10 digest telemetry", () => {
+  it("GET /digest appends one digest_log row per served card, ranks from 1", async () => {
+    // A candidate that clears the ≥4-token fragment filter, so the digest serves something.
+    await post({ tweets: [{ ...tweet, tweet_id: "m10-c", text: "telemetry candidate tweet with plenty of tokens" }] });
+    const { status, json } = await req("GET", "/digest?limit=10");
+    assert.equal(status, 200);
+    assert.ok(json.items.length >= 1, "digest served at least one card");
+    const rows = db.prepare("SELECT * FROM digest_log ORDER BY rank").all() as any[];
+    assert.equal(rows.length, json.items.length, "one log row per served card");
+    assert.equal(rows[0].rank, 1);
+    assert.equal(rows[0].channel, "web");
+    assert.equal(rows[0].tweet_id, json.items[0].tweet_id);
+    assert.ok(rows[0].lane === "taste" || rows[0].lane === "explore");
+    assert.equal(rows[0].digest_date, new Date().toISOString().slice(0, 10));
+    // mix parts captured at serve time — the not-reconstructable-later half of the log
+    assert.deepEqual(Object.keys(JSON.parse(rows[0].parts)).sort(), ["author", "rubric", "taste"]);
+  });
+
+  it("?channel=imessage (daily.ts teaser) logs under its real channel", async () => {
+    const before = (db.prepare("SELECT COALESCE(MAX(rowid),0) n FROM digest_log").get() as any).n;
+    await req("GET", "/digest?limit=1&channel=imessage");
+    const rows = db.prepare("SELECT channel FROM digest_log WHERE rowid > ?").all(before) as any[];
+    assert.ok(rows.length >= 1);
+    assert.ok(rows.every(r => r.channel === "imessage"));
+  });
+
+  it("POST /digest/open appends an open receipt", async () => {
+    const { status } = await req("POST", "/digest/open", { tweet_id: "m10-c" });
+    assert.equal(status, 200);
+    const rows = db.prepare("SELECT tweet_id, ts FROM digest_opens").all() as any[];
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].tweet_id, "m10-c");
+    assert.ok(rows[0].ts);
+  });
+
+  it("POST /digest/open without tweet_id → 400, nothing appended", async () => {
+    const { status } = await req("POST", "/digest/open", { nope: true });
+    assert.equal(status, 400);
+    const n = (db.prepare("SELECT COUNT(*) n FROM digest_opens").get() as any).n;
+    assert.equal(n, 1); // still just the row from the previous test
+  });
+});

@@ -25,8 +25,14 @@ time, user approves between phases). Token auth + read-receipt digest are LIVE.
   pending (free re-score lever whenever the user edits it).
 - **M9 ✅ built + live 2026-07-05** — digest ranks by the weighted mix (see the M9 section note);
   server restarted, live payload verified (parts sum to score; unscored rubric renders +0.00).
-- **NEXT: dogfood the mix for a few days, then user approves M10** (digest feedback
-  instrumentation — the funnel telemetry that would make any future online comparison possible).
+- **M10 ✅ built + live 2026-07-06** — every `/digest` serve appends digest_log rows
+  (rank/lane/channel + serve-time score/parts); `openTweet()` fires token-authed open receipts;
+  daily.ts's teaser logs as channel `imessage`; `npm run funnel` reports opens + votes by
+  lane/rank and mean mix parts by verdict. Server restarted, first live serve verified logging.
+  Pre-M10 votes (n=70) have no serve context — from today, votes land attributable.
+- **NEXT: let funnel data accumulate over dogfood days, then read `npm run funnel` before any
+  re-weighting debate; M11 (interleaved online comparison) is the candidate next phase** —
+  user approves between phases.
 
 **Gate verdicts (2026-07-06, balanced n=70, rubric coverage 70/70):** dogfood day 1 added 71
 hand-signed reviews (30👍/41👎) — the pool jumped 52 → 70 and got HARDER for everyone: keyword MAP
@@ -180,8 +186,17 @@ v1 / rubric / mix side by side; tests green.
 
 ### M10 — Digest feedback instrumentation (own-feed telemetry)
 
-**Problem:** the extension studies you on X, but nothing logs what YOUR digest showed nor what
-you opened — the prerequisite for any "online" ranker comparison (interleaving).
+> **Built + live 2026-07-06.** As specced, plus serve-time `score`/`parts` on every digest_log
+> row: component attribution ("were the 👎s on high-author-prior cards?") is NOT reconstructable
+> later — profile/prior/rubric all drift daily — so it's captured at serve. No second write path
+> for iMessage: daily.ts's teaser fetch tags `?channel=imessage` (that one-card serve IS the send
+> list). Funnel semantics: exposure = FIRST logged serve per tweet (reloads re-log, the report
+> dedupes); opens count only at-or-after first serve; a vote attributes to the latest serve
+> at-or-before it, latest verdict per tweet (labels.ts convention); votes with no prior serve
+> (review mode, all n=70 pre-M10 votes) are excluded as context-free. First live serve
+> immediately produced signal: rank-1's score was 78% author part (z-blowup — most of the pool
+> has prior 0, so any liked author is a huge outlier), serve-time evidence for hypothesis (b) in
+> the day-1 gate reading; the funnel's parts-by-verdict table now measures it. Tests 52 → 62.
 
 **Design (append-only, additive schema):**
 - `digest_log(digest_date, channel 'web'|'imessage', tweet_id, rank, lane, ts)`: written on every
@@ -881,8 +896,8 @@ impression) + 12 extension. All pass.
 | M6 | ✅ closed | Ranker v1 gate honest & complete. Both learnable paths dead — content LR loses to keyword, behavioral probe (`probe.ts`) shows dwell/opened don't predict likes. Product ranker = cosine digest (`digest.ts`). See "M6 SOLIDIFIED" section. |
 | M7 | ✅ built 2026-07-03 | Independent candidate acquisition — pinned poller tab, `source='poll'`, capture pipeline reused. Live dogfood + user approval pending |
 | M8 | ✅ built 2026-07-04 | LLM rubric scorer on the Claude subscription (`claude -p`): `rubric.ts` + `RUBRIC.md` + eval arm. First verdict (generic rubric, 52/52): MAP 0.683 vs keyword 0.745 — closest challenger yet, gate still keyword's. Personalize RUBRIC.md → re-score → re-eval |
-| M9 | planned | Weighted mix: taste + rubric + author knobs in `digest.ts`, eval arm "mix" |
-| M10 | planned | Own-feed telemetry: `digest_log` + `digest_opens` + funnel report (prereq for interleaving/M11) |
+| M9 | ✅ built + live 2026-07-05 | Weighted mix: taste + rubric + author knobs in `digest.ts`, eval arm "mix" |
+| M10 | ✅ built + live 2026-07-06 | Own-feed telemetry: `digest_log` + `digest_opens` + `npm run funnel` (prereq for interleaving/M11); serve rows carry score/parts for component attribution |
 
 ---
 

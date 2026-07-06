@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "start": "node --env-file-if-exists=.env.local --experimental-strip-types server.ts",
-    "test": "node --experimental-strip-types --test server.test.ts m5m6.test.ts digest.test.ts rubric.test.ts",
+    "test": "node --experimental-strip-types --test server.test.ts m5m6.test.ts digest.test.ts rubric.test.ts funnel.test.ts",
+    "funnel": "node --experimental-strip-types funnel.ts",
     "eval": "node --experimental-strip-types eval.ts",
     "probe": "node --experimental-strip-types probe.ts",
     "labels": "node --experimental-strip-types labels.ts",
