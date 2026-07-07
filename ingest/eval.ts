@@ -1,9 +1,10 @@
-// M6 — Offline replay eval = THE SHIP GATE (PRD §9). Rank a held-out pool of {positives,
-// negatives} and measure NDCG@k / MAP. v1 ships ONLY if it beats the AI-keyword lexical
-// baseline (the rule-of-thumb that loosely built the labels) — beating random/recency/char_len
-// is necessary but not sufficient. If v1 loses, that's a real result; we print it, we don't ship.
-// The review gate also prints a paired-bootstrap 95% CI per MAP and on (v1 − keyword): at small n
-// the point estimates are noisy, and a diff CI straddling 0 means TIED, not a loss/win.
+// M6 — Offline replay eval = the ship gate (PRD §9), M12-rethought into a GUARDRAIL: the online
+// interleave (interleave.ts) is the verdict-maker; this gate answers "does any candidate arm beat
+// the keyword baseline on the hand-signed review pool" — beating random/recency/char_len is
+// necessary but not sufficient. A candidate clears only if it beats keyword point-wise on NDCG@10
+// AND MAP *and* its paired-bootstrap (arm − keyword) MAP CI excludes 0 — a CI straddling 0 means
+// TIED, not a win. Every review-pool arm gets that diff CI, not just v1 (the M9 review's deferred
+// requirement). If everything loses, that's a real result; we print it, we don't ship.
 //
 // Note on v0: the existing behavioral ranker (ranker.ts) scores dwell/opened/liked — the
 // held-out candidates here are text-only harvested likes with no impressions, so v0 scores them
@@ -72,12 +73,18 @@ function randomScorer(rows: LabeledRow[]): (r: LabeledRow) => number {
 // different eras (hard_neg = old harvested prunes, easy_neg = recent timeline), so a newest-30%
 // label-0 slice would be ALL easy_neg and starve the same-era pool of negatives. Within each
 // kind: oldest `frac` → train, newest → test.
+//
+// REVIEW KINDS GO 100% TO TEST (M12 rethink). The time-split existed to stop the LR memorizing its
+// own test rows — but no arm trains on reviews anymore (v1 is behavioral-only below; taste/author
+// already exclude reviewed tweets via the M9 leak guard; keyword is fixed; rubric is an LLM), so
+// spending the oldest 70% of hand-signed gold on a dead trainee just starved the gate (balanced
+// n=88 while 387 reviews existed). Every review is test; the gate gets its full resolution.
 export function splitByTime(rows: LabeledRow[], frac = 0.7): { train: LabeledRow[]; test: LabeledRow[] } {
   const train: LabeledRow[] = [], test: LabeledRow[] = [];
   for (const kind of ["pos", "hard_neg", "easy_neg", "review_pos", "review_neg"] as const) {
     const cls = rows.filter(r => r.kind === kind)
       .sort((a, b) => (Date.parse(a.created_at) || 0) - (Date.parse(b.created_at) || 0));
-    const cut = Math.floor(cls.length * frac);
+    const cut = kind.startsWith("review") ? 0 : Math.floor(cls.length * frac);
     train.push(...cls.slice(0, cut));
     test.push(...cls.slice(cut));
   }
@@ -87,10 +94,17 @@ export function splitByTime(rows: LabeledRow[], frac = 0.7): { train: LabeledRow
 export interface PoolResult {
   pool: string;
   n: number; // balanced test-pool size (both classes) — small n = noisy gate, warn on it
-  rows: { name: string; ndcg10: number; ndcg50: number; map: number; mapCI?: [number, number] }[];
-  ships: boolean;
-  diffCI?: [lo: number, median: number, hi: number]; // paired bootstrap on (v1 full − keyword) MAP
+  rows: {
+    name: string; ndcg10: number; ndcg50: number; map: number; mapCI?: [number, number];
+    diffVsKw?: [lo: number, hi: number]; // paired bootstrap on (arm − keyword) MAP — every arm, not just v1
+  }[];
+  ships: boolean;      // some CANDIDATE arm beats keyword: NDCG@10 AND MAP point-wise, AND (when CI ran) diff CI > 0
+  champion?: string;   // the candidate that cleared it (highest MAP among clearers)
 }
+
+// Baselines never ship — they exist to be beaten. Everything else in a pool is a candidate.
+const BASELINES = new Set(["random", "recency", "char_len"]);
+const isCandidate = (name: string) => !BASELINES.has(name) && !name.startsWith("keyword");
 
 // Paired bootstrap (ported from the closed M6 embedding experiment): resample the test rows with
 // replacement B times and recompute every scorer's MAP on the SAME resample, so the per-model CIs
@@ -154,18 +168,23 @@ function evalPool(
   ];
   const rows: PoolResult["rows"] = named.map(([name, s]) => ({ name, ...metrics(test, s) }));
   const keyword = rows.find(r => r.name.startsWith("keyword"))!;
-  const v1full = rows.find(r => r.name === "v1 LR (full)")!;
-  const ships = v1full.ndcg10 > keyword.ndcg10 && v1full.map > keyword.map;
-  let diffCI: PoolResult["diffCI"];
   if (withCI && test.length > 0) {
     const maps = bootstrapMaps(test, named);
-    rows.forEach((r, i) => { r.mapCI = [pctile(maps[i], 0.025), pctile(maps[i], 0.975)]; });
     const kw = named.findIndex(([n]) => n.startsWith("keyword"));
-    const v1i = named.findIndex(([n]) => n === "v1 LR (full)");
-    const diff = maps[v1i].map((m, b) => m - maps[kw][b]);
-    diffCI = [pctile(diff, 0.025), pctile(diff, 0.5), pctile(diff, 0.975)];
+    rows.forEach((r, i) => {
+      r.mapCI = [pctile(maps[i], 0.025), pctile(maps[i], 0.975)];
+      if (i === kw) return;
+      const diff = maps[i].map((m, b) => m - maps[kw][b]);
+      r.diffVsKw = [pctile(diff, 0.025), pctile(diff, 0.975)];
+    });
   }
-  return { pool, n: test.length, rows, ships, diffCI };
+  // The gate, generalized past v1: ANY candidate arm can clear it, but only honestly — point-wise
+  // better on both metrics AND, when the bootstrap ran, a diff CI that excludes 0 (tied ≠ win).
+  const clearers = rows.filter(r =>
+    isCandidate(r.name) && r.ndcg10 > keyword.ndcg10 && r.map > keyword.map &&
+    (r.diffVsKw ? r.diffVsKw[0] > 0 : true));
+  const champion = clearers.sort((a, b) => b.map - a.map)[0]?.name;
+  return { pool, n: test.length, rows, ships: clearers.length > 0, champion };
 }
 
 // Class-balance a test pool by deterministically downsampling the majority class to the minority
@@ -185,6 +204,8 @@ function balancePool(test: LabeledRow[]): LabeledRow[] {
 
 export function runEval(rows: LabeledRow[], rubric?: RubricScores, mix?: MixInputs): EvalResult {
   const { train: tr, test } = splitByTime(rows);
+  // v1 trains on BEHAVIORAL labels only (splitByTime routes every review row to test) — it kept
+  // losing the gate (below random at n=88, five readings running), so it no longer earns gold.
   const v1 = train(tr, { useAuthor: true });
   const v1NoAuthor = train(tr, { useAuthor: false }); // ablation: author can memorize
 
@@ -235,11 +256,15 @@ export function runEval(rows: LabeledRow[], rubric?: RubricScores, mix?: MixInpu
 }
 
 function formatPool(p: PoolResult): string {
-  const ciHead = p.rows.some(r => r.mapCI) ? "  MAP 95% CI" : "";
+  const hasCI = p.rows.some(r => r.mapCI);
+  const ciHead = hasCI ? `  ${"MAP 95% CI".padEnd(16)}  Δ vs keyword` : "";
   const head = `${"model".padEnd(28)} ${"NDCG@10".padStart(8)} ${"NDCG@50".padStart(8)} ${"MAP".padStart(8)}${ciHead}`;
+  const sgn = (x: number) => `${x >= 0 ? "+" : ""}${x.toFixed(3)}`;
   const body = p.rows.map(r =>
     `${r.name.padEnd(28)} ${r.ndcg10.toFixed(4).padStart(8)} ${r.ndcg50.toFixed(4).padStart(8)} ${r.map.toFixed(4).padStart(8)}` +
-    (r.mapCI ? `  [${r.mapCI[0].toFixed(3)}, ${r.mapCI[1].toFixed(3)}]` : ""),
+    (r.mapCI ? `  ${`[${r.mapCI[0].toFixed(3)}, ${r.mapCI[1].toFixed(3)}]`.padEnd(16)}` : "") +
+    // per-arm paired diff CI vs keyword: * marks a CI that excludes 0 (a real gap, either direction)
+    (r.diffVsKw ? `  [${sgn(r.diffVsKw[0])}, ${sgn(r.diffVsKw[1])}]${r.diffVsKw[0] > 0 || r.diffVsKw[1] < 0 ? " *" : ""}` : ""),
   );
   return [`▼ ${p.pool}  (balanced test n=${p.n})`, head, ...body].join("\n");
 }
@@ -261,26 +286,31 @@ function formatRubricCoverage(cov?: RubricCoverage): string {
   return `rubric coverage: ${cov.scored}/${cov.total} review-pool tweets scored (sha ${shaShort})${weak}`;
 }
 
-export function formatEval(res: EvalResult): string {
+// Default output is the review pool + verdict ONLY — the supplementary pools were LR-era scaffolding
+// (era-confounded / keyword-circular) and mostly added noise to the read. `--all` still prints them.
+export function formatEval(res: EvalResult, { all = false } = {}): string {
   const r = res.reviewOnly;
   const gate = r.n < REVIEW_MIN_N
     ? `⏳ INCONCLUSIVE — only ${r.n} hand-signed test labels (need ~${REVIEW_MIN_N}+). Sign more 👍/👎 in the ` +
       `reading client, then re-run. The keyword gate below is near-circular, so this is the one that counts.`
     : r.ships
-      ? `SHIP ✅  v1 beats keyword on the NON-CIRCULAR review gate (NDCG@10 AND MAP) at n=${r.n}.`
-      : `HOLD ⛔  v1 does NOT beat keyword on the review gate at n=${r.n} — do not ship v1.`;
-  const d = r.diffCI;
-  const ciNote = d
-    ? d[0] < 0 && d[2] > 0
-      ? `\n   (v1 − keyword) MAP CI [${d[0].toFixed(3)}, ${d[2].toFixed(3)}] straddles 0 → statistically TIED at n=${r.n}; sign more labels before trusting the verdict either way.`
-      : `\n   (v1 − keyword) MAP CI [${d[0].toFixed(3)}, ${d[2].toFixed(3)}] excludes 0 → the gap is real at n=${r.n}, not sampling noise.`
+      ? `SHIP ✅  ${r.champion} beats keyword on the NON-CIRCULAR review gate (NDCG@10 AND MAP, diff CI excludes 0) at n=${r.n}.`
+      : `HOLD ⛔  no candidate beats keyword on the review gate at n=${r.n} — keyword stays the champion.`;
+  // Summarize the strongest candidate's diff CI (the table has every arm's) — tied vs real gap.
+  const best = [...r.rows].filter(x => isCandidate(x.name) && x.diffVsKw).sort((a, b) => b.map - a.map)[0];
+  const ciNote = best?.diffVsKw
+    ? best.diffVsKw[0] < 0 && best.diffVsKw[1] > 0
+      ? `\n   best candidate (${best.name}): (arm − keyword) MAP CI [${best.diffVsKw[0].toFixed(3)}, ${best.diffVsKw[1].toFixed(3)}] straddles 0 → statistically TIED at n=${r.n}.`
+      : `\n   best candidate (${best.name}): (arm − keyword) MAP CI [${best.diffVsKw[0].toFixed(3)}, ${best.diffVsKw[1].toFixed(3)}] excludes 0 → the gap is real at n=${r.n}, not sampling noise.`
     : "";
   const coverage = formatRubricCoverage(res.rubricCoverage);
+  const supplementary = all
+    ? [formatPool(res.sameEra), "", formatPool(res.full), ""]
+    : ["(supplementary same-era/full pools hidden — `npm run eval -- --all` to print them)", ""];
   return [
     formatPool(res.reviewOnly),
     ...(coverage ? [coverage] : []), "",
-    formatPool(res.sameEra), "",
-    formatPool(res.full), "",
+    ...supplementary,
     gate + ciNote,
   ].join("\n");
 }
@@ -295,5 +325,5 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   console.log(formatEval(runEval(
     buildLabels(db), loadRubricScores(db),
     { taste: buildTaste(db), authorPrior: buildAuthorPrior(db) },
-  )));
+  ), { all: process.argv.includes("--all") }));
 }

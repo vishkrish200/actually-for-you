@@ -55,12 +55,19 @@ export interface MixParts { taste: number; rubric: number; author: number }
 // stats are computed over PRESENT values only and missing rows get exactly 0 — pool-neutral,
 // never a penalty (eval's −1 rank-last sentinel is display-only for the pure rubric arm; the mix
 // contract is z=0). Zero variance (or an empty/singleton present set) → all 0.
+//
+// WINSORIZED at ±Z_CLAMP: a zero-inflated input (the author prior — most of the pool is 0) makes
+// any nonzero row a ±5σ+ outlier under raw z, and that one component swamps the blend. M10's first
+// live serve caught it: rank-1's score was 78% author part. The clamp bounds every component's
+// contribution at W·Z_CLAMP, so no single knob can outvote the other two combined by outlier alone.
+// Functional-form fix from serve-log evidence — NOT a re-weight against the review pool.
+export const Z_CLAMP = 2;
 export function zscores(xs: (number | null)[]): number[] {
   const present = xs.filter((x): x is number => x !== null);
   const mean = present.length ? present.reduce((a, b) => a + b, 0) / present.length : 0;
   const sd = present.length
     ? Math.sqrt(present.reduce((a, x) => a + (x - mean) ** 2, 0) / present.length) : 0;
-  return xs.map(x => (x === null || sd === 0 ? 0 : (x - mean) / sd));
+  return xs.map(x => (x === null || sd === 0 ? 0 : Math.max(-Z_CLAMP, Math.min(Z_CLAMP, (x - mean) / sd))));
 }
 
 // THE mix formula — digest and eval's `mix` arm both call this, so they cannot diverge. Input is

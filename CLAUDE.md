@@ -30,14 +30,16 @@ section in PROGRESS.md is the plan of record; one phase at a time, user approves
 - `afy.db`, `model.json`, `.env.local` are personal data — gitignored, never commit them.
   `ducky-cli/` is an unrelated project accidentally nested here — never commit it.
 
-## Ship gate (M6, eval.ts)
+## Ship gate (M6, rethought 2026-07-07 — eval.ts)
 
-A learned ranker ships ONLY if it beats the keyword baseline on the **review-only pool**
-(hand-signed labels) on NDCG@10 AND MAP. Same-era and full pools are supplementary — both
-are confounded (keyword-circular / era-detectable). The gate is small-n noisy: `npm run eval`
-prints a bootstrap 95% CI next to each review-pool MAP plus a (v1 − keyword) diff CI — a diff
-CI straddling 0 = tied, not a win. Don't tune hyperparameters against this gate until n grows —
-that's fitting noise.
+The offline gate is a **guardrail**; the online interleave (`npm run interleave`, M11) is the
+verdict-maker. A candidate arm clears the gate ONLY by beating keyword on the **review-only pool**
+(hand-signed labels) on NDCG@10 AND MAP **with a paired (arm − keyword) diff CI excluding 0** — a
+CI straddling 0 = tied, not a win. Every review-pool arm gets that diff CI. Reviews are 100% test:
+no arm trains on them (v1 LR trains on behavioral labels only), so all hand-signed gold feeds the
+gate. Same-era and full pools are confounded LR-era reads, hidden behind `npm run eval -- --all`.
+Don't tune weights/hyperparameters against the gate — that's fitting noise; the interleave is
+where rankers earn their keep.
 
 ## Two packages, different toolchains (don't mix them up)
 

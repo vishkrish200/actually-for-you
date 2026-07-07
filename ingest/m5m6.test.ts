@@ -70,6 +70,21 @@ describe("split & label sanity", () => {
     assert.ok(test.every(r => Date.parse(r.created_at) >= Date.parse("2024-01-08T00:00:00Z")));
   });
 
+  it("review kinds go 100% to test — hand-signed gold never trains any arm", () => {
+    const rows: LabeledRow[] = [];
+    for (let i = 0; i < 10; i++) {
+      const d = `2024-01-${String(i + 1).padStart(2, "0")}T00:00:00Z`;
+      rows.push(mk({ tweet_id: `rp${i}`, label: 1, kind: "review_pos", created_at: d }));
+      rows.push(mk({ tweet_id: `rn${i}`, label: 0, kind: "review_neg", created_at: d }));
+      rows.push(mk({ tweet_id: `p${i}`, label: 1, kind: "pos", created_at: d }));
+    }
+    const { train: tr, test } = splitByTime(rows, 0.7);
+    assert.equal(tr.filter(r => r.kind.startsWith("review")).length, 0, "no review row in train");
+    assert.equal(test.filter(r => r.kind.startsWith("review")).length, 20, "every review row in test");
+    // behavioral kinds still time-split 70/30
+    assert.ok(tr.some(r => r.kind === "pos") && test.some(r => r.kind === "pos"));
+  });
+
   it("labelReport surfaces counts and the char_len confounder", () => {
     const rows = [mk({ label: 1, char_len: 156 }), mk({ label: 0, char_len: 122 })];
     const rep = labelReport(rows);

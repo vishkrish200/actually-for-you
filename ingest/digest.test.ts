@@ -2,7 +2,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { buildTaste, scoreText, buildDigest, buildAuthorPrior, zscores, MIX_WEIGHTS } from "./digest.ts";
+import { buildTaste, scoreText, buildDigest, buildAuthorPrior, zscores, mixFinal, MIX_WEIGHTS, Z_CLAMP } from "./digest.ts";
 import { ensureSchema } from "./rubric.ts";
 
 function seed(): DatabaseSync {
@@ -133,6 +133,28 @@ describe("M9 weighted mix (named knobs)", () => {
     assert.deepEqual(zscores([5, 5]), [0, 0], "zero variance → all neutral");
     assert.deepEqual(zscores([null, null]), [0, 0], "nothing scored → all neutral");
     assert.deepEqual(zscores([]), []);
+  });
+
+  it("zscores winsorize at ±Z_CLAMP — a zero-inflated outlier can't blow up", () => {
+    // author-prior shape: 20 rows at 0, one liked author. Raw z of the outlier ≈ +4.5 → clamped.
+    const xs: (number | null)[] = [...Array(20).fill(0), 5];
+    const z = zscores(xs);
+    assert.equal(z[20], Z_CLAMP, `outlier should clamp to +${Z_CLAMP}, got ${z[20]}`);
+    assert.ok(z.every(v => Math.abs(v) <= Z_CLAMP), "no |z| may exceed the clamp");
+    // small spreads are untouched (max |z| in a 3-row pool < 2): the clamp only bites outliers
+    assert.deepEqual(zscores([10, 2, null]), [1, -1, 0], "in-range z unchanged");
+  });
+
+  it("mixFinal: one component's part is bounded by W·Z_CLAMP — the M10 78%-author-part pathology", () => {
+    const pool = [
+      ...Array.from({ length: 20 }, () => ({ taste: 0, rubric: null, author: 0 })),
+      { taste: 0, rubric: null, author: 8 }, // prolific liked author — the outlier that used to dominate
+    ];
+    const out = mixFinal(pool);
+    const cap = MIX_WEIGHTS.author * Z_CLAMP;
+    assert.ok(out[20].parts.author <= cap + 1e-12,
+      `author part ${out[20].parts.author} must not exceed W.author·Z_CLAMP=${cap}`);
+    assert.ok(out[20].parts.author > 0, "the liked author still gets a positive (bounded) lift");
   });
 
   it("buildAuthorPrior: engagement_labels ONLY — prunes out, reviews NEVER counted (CLAUDE.md invariant)", () => {

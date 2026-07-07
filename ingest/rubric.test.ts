@@ -228,6 +228,9 @@ describe("eval rubric arm", () => {
     // perfect separation → rubric MAP is a perfect 1.0 and at least matches the keyword baseline.
     assert.equal(arm!.map, 1, `rubric MAP should be perfect on cleanly-separated scores, got ${arm!.map}`);
     assert.ok(arm!.map >= kw.map, "rubric at least ties keyword on this fixture");
+    // M12 rethink: every non-keyword review-pool arm carries a paired (arm − keyword) diff CI.
+    assert.ok(arm!.diffVsKw, "rubric arm has a diff CI vs keyword");
+    assert.ok(!kw.diffVsKw, "keyword carries no diff against itself");
 
     // coverage: the balanced test pool is fully scored here → scored === total, sha matches.
     assert.ok(res.rubricCoverage, "coverage computed");
