@@ -22,7 +22,10 @@ import type { DatabaseSync } from "node:sqlite";
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? "claude";
 const MODEL = process.env.AFY_RUBRIC_MODEL ?? "haiku"; // haiku ≈ pennies/day; overridable if desired
 const BATCH_SIZE = 20;     // items per claude call — keeps one prompt small and one bad batch cheap
-const CALL_TIMEOUT_MS = 120_000;
+// 10 min, was 120s. Observed 2026-07-06/07: at the 08:00 window the CLI rides out multi-minute API
+// backoff before the first token; 120s SIGTERM'd healthy-but-throttled calls, two in a row tripped
+// the abort, and the day's scoring silently died (coverage fell to 46/88 on the review pool).
+const CALL_TIMEOUT_MS = 600_000;
 const MAX_BUFFER = 8 * 1024 * 1024; // generous: a 20-item JSON reply is tiny, but never truncate
 
 export interface ScoreItem { id: string; text: string; quoted_text?: string }
@@ -84,7 +87,9 @@ export const runClaudeCLI: RunClaude = (prompt) =>
     execFile(
       CLAUDE_BIN,
       ["--model", MODEL, "-p", prompt],
-      { timeout: CALL_TIMEOUT_MS, maxBuffer: MAX_BUFFER },
+      // SIGKILL: the CLI shrugs off SIGTERM mid-API-retry (observed: a "timed-out" call kept its
+      // session alive 14+ min), which serializes zombies into the sequential batch loop.
+      { timeout: CALL_TIMEOUT_MS, maxBuffer: MAX_BUFFER, killSignal: "SIGKILL" },
       (err, stdout) => (err ? reject(err) : resolve(stdout)),
     );
   });
