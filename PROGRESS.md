@@ -39,10 +39,18 @@ The offline gate is now a guardrail; the interleave is the verdict-maker. Let da
   no ranker selected → immune to serve-selection bias (the main pool drifts toward the serving
   arm's own audit log as digest votes accumulate). Diagnostic for now (REVIEW_MIN_N floor);
   today n=0 balanced — it grows exactly as fast as ✧ cards get voted (~5 served/day).
-- **User's parallel jobs (unchanged, now with sharper payoff):** personalize RUBRIC.md — the
-  GENERIC rubric already ties the champion, this is the highest-leverage free move (`npm run
-  rubric` re-scores under the new sha, then `npm run eval`); vote daily, ✧ explore cards
-  especially (they are the audit pool); optionally install the second scoring window plist.
+- **RUBRIC.md personalized ✅ 2026-07-07 (sha 8ff3d8ea)** — derived from the owner's OWN curation
+  (harvested likes/bookmarks + prune reasons; NEVER the review pool — that would leak the gate).
+  Key deltas: curated resource/reading lists are top-tier (the generic anti-listicle rule fought a
+  demonstrated bookmark habit); agent-tooling craft + frontier-lab career intel first-class; hard
+  0–2 topic floor on crypto/memecoin/trading. Re-scored 540 tweets (review pool first).
+  **Verdict at n=352, coverage 339/352: HOLD stands; rubric MAP 0.6442 vs keyword 0.6490, diff CI
+  [−0.066, +0.067] — the tightest tie yet, still not a win.** Personalized ≈ generic ≈ keyword
+  offline; the discriminating tests are ONLINE (interleave) and the audit pool. Doctrine: do NOT
+  iterate RUBRIC.md against the gate — next rubric edit should come from lived digest experience,
+  not from chasing MAP.
+- **User's parallel jobs:** vote daily, ✧ explore cards especially (they are the audit pool —
+  still n=0 balanced); optionally install the second scoring-window plist (see chat 2026-07-07).
 
 Token auth + read-receipt digest are LIVE. M7–M11 history below; CLAUDE.md's ship-gate section
 was updated to the new contract (guardrail + CI-gated SHIP + interleave as verdict-maker).
