@@ -3,10 +3,10 @@
   EDIT ME — THIS FILE IS THE PRODUCT.
 ============================================================================
 This rubric IS the qualityWeight. An LLM reads everything below and grades
-each tweet 0–10 against it (rubric.ts). Personalize it hard: the starter
-text is opinionated-but-generic for a technical Twitter reader — rewrite the
-anchors in your own words, add your own pet loves and pet peeves, delete what
-doesn't fit. The more specific and personal this is, the better the scores.
+each tweet 0–10 against it (rubric.ts). Personalized 2026-07-07 from the
+owner's OWN curation history — harvested likes/bookmarks and hand-pruned
+negatives (never from the review pool: those are the eval gate's test
+labels, and a rubric written from them would leak the gate).
 
 How it's used (so you can calibrate the wording):
   - The grader sees ONLY the tweet text (+ quoted text when it's a quote-
@@ -25,25 +25,44 @@ numbers only. When unsure, it lands the tweet at 5 and moves on.
 ============================================================================
 -->
 
+# Who is reading
+
+An ML/AI engineer who builds with and studies LLMs: training and fine-tuning,
+GPU/systems internals, agents and coding tools (Claude Code, Codex, and the
+skill/subagent ecosystem around them), evals, and AI infrastructure. Reads to
+get better at this craft and to track the frontier. Not here for markets,
+crypto, politics, or celebrity anything.
+
 # What earns 8–10 — I would stop scrolling for this
 
-A tweet scores high when it would genuinely change what I think, know, or do.
-Concrete anchors:
+A tweet scores high when it would genuinely change what I know, build, or do
+next. Concrete anchors, in roughly descending order of how reliably I want
+them:
 
-- **A real technical claim with substance**: a benchmark result, an
-  architecture insight, a non-obvious failure mode, a "here's what actually
-  happened when we tried X". Specific enough that I could act on it or argue
-  with it.
-- **A sharp idea, cleanly argued**: a genuinely novel framing, a
-  counter-intuitive take backed by reasoning (not just contrarianism), a
-  mental model that makes something click.
-- **Primary-source signal**: the person who built the thing explaining a
-  decision; a paper's actual finding stated plainly; a first-hand report from
-  someone who was there. Not a reaction to a reaction.
-- **Dense, earned specificity**: names the actual system, the actual number,
-  the actual tradeoff. Teaches me the shape of a problem I didn't have before.
-- **Craft**: a piece of writing, a demo, or an explanation good enough that
-  the quality itself is the point.
+- **ML/AI systems substance**: a training or fine-tuning recipe with real
+  numbers, an architecture insight or derivation, kernel/GPU internals
+  (memory layout, TMA, why something is fast), inference/serving tricks, a
+  non-obvious failure mode, "here's what actually happened when we trained X".
+- **Curated learning resources with judgment**: "read these papers in this
+  order", a vetted list of blogs/courses/repos for a hard topic, a reading
+  list someone clearly earned by doing the work. Density of vetted links IS
+  the substance — do NOT dock a tweet for being a list or a thread if the
+  items are specific and the curation is real.
+- **Agent & coding-tool craft**: a concrete workflow, skill, or configuration
+  that changes how I'd use Claude Code/Codex/agents tomorrow — token-cost
+  engineering, subagent patterns, eval harnesses, a trick with a measured
+  payoff. "Paste this, here's why it works" beats "AI will change coding".
+- **First-person builder/researcher reports**: "I implemented the paper and
+  found…", "I beat the baseline by 4%, here's the config", "we cut AI spend
+  in half with routing/caching, here's the architecture". Skin in the game,
+  specifics on the table.
+- **Frontier-lab and AI-career intel with substance**: how hiring actually
+  works at frontier labs, what skills they screen for, an insider explaining
+  a real decision, a model release WITH the details that matter (capabilities,
+  price, context, what changed) rather than vibes.
+- **A sharp idea about where the field is going, argued**: inference-compute
+  economics, data-vs-compute takes, bitter-lesson discourse — when it commits
+  to a claim and gives reasoning I could argue with.
 
 A 10 is rare — reserve it for something I'd screenshot and send to someone.
 
@@ -52,11 +71,13 @@ A 10 is rare — reserve it for something I'd screenshot and send to someone.
 Most competent tweets live here. Real, on-topic, not annoying — just not
 something I'd have missed.
 
-- A reasonable opinion I already agree with, adding nothing new (5–6).
-- A useful-but-routine link, announcement, or "TIL" with little context (4–6).
-- A decent question or observation that doesn't quite land a point (4–5).
+- A solid model/product release note with some specifics but no depth (5–7).
+- A reasonable AI opinion I already agree with, adding nothing new (5–6).
+- A useful-but-routine link or "TIL" with little context (4–6).
 - On-topic but shallow: gestures at a real idea without developing it (4–6).
-- Mildly interesting personal/industry note, low stakes either way (4–5).
+- A genuinely funny, sharp joke or meme — wit is the substance (5–7). A lazy
+  meme-format reply is a 2–3.
+- Mildly interesting industry/personal note, low stakes either way (4–5).
 
 If it's competent and on-topic but I'd forget it in an hour, it's a 5.
 
@@ -66,20 +87,24 @@ These are the things the feed is FULL of and the whole point is to filter out.
 Score low even if the tweet is "popular" — popularity is not quality, and the
 grader can't see engagement anyway.
 
-- **Engagement-bait**: "RT if you agree", "reply with X", follower-farming,
-  "a thread 🧵" that promises the world and delivers a listicle, "unpopular
-  opinion:" as a hook, manufactured polls, "who else…".
-- **Breathless hype**: "this changes EVERYTHING", "mind = blown", "we are so
-  back", "the future is here" — superlatives with zero substance under them.
-  Announcement-as-revelation with no actual detail.
-- **Outrage-bait / dunks**: ragebait, bad-faith quote-tweet pile-ons, tribal
-  score-settling, "imagine thinking…", contrarian-for-clicks. Heat, no light.
-- **Pure vibes / noise**: "gm", "wagmi", subtweets with no referent, cryptic
-  one-word posts, in-jokes I can't parse, mood-posting, "vibes".
-- **Grift & spam**: crypto/token shilling, "I made $X doing Y, here's how"
-  (link in bio), giveaway farming, obvious astroturf, SEO-slop.
-- **Empty motivation**: fortune-cookie platitudes, hustle-porn, "here are 10
-  productivity hacks" with no actual hack.
+- **Crypto, memecoins, tokens, NFTs, onchain ANYTHING**: trading calls,
+  wallet tracking, "$X to $Y" flips, airdrops, mints, DAOs, giveaway threads,
+  chain-vs-chain discourse. This is a hard topic floor: even technically
+  competent crypto-infrastructure content is a 0–2 here — it is not what this
+  feed is for.
+- **Trading, markets, and money-flex content**: stock/forex/portfolio talk,
+  "how I make $X/day", copy-trading, hustle-porn, "I turned $1k into $1M".
+- **Politics, celebrity, and outrage**: politician/billionaire news, net-worth
+  updates, tribal dunks, ragebait, "imagine thinking…". Heat, no light.
+- **Engagement-bait**: "RT if you agree", "reply and I'll DM you", follow-to-
+  enter anything, manufactured polls, "who else…", a "🧵" that promises the
+  world and delivers nothing — the sin is the emptiness, not the thread form.
+- **Breathless hype**: "this changes EVERYTHING", "we are so back",
+  announcement-as-revelation with zero detail under the superlatives.
+- **Pure vibes / noise**: "gm", subtweets with no referent, cryptic one-word
+  posts, in-jokes with no payload, mood-posting.
+- **Empty motivation**: fortune-cookie platitudes, "10 productivity hacks"
+  with no actual hack.
 
 A 0 is for something that made the feed strictly worse by existing.
 
@@ -87,12 +112,17 @@ A 0 is for something that made the feed strictly worse by existing.
 
 - **Substance over polish**: a rough but genuinely informative tweet beats a
   slick but empty one. Grade the idea, not the wordsmithing.
+- **Lists and threads are format, not sin**: judge the payload. A dense
+  curated list of real resources is top-tier; a listicle of platitudes is
+  engagement-bait.
 - **Quote-tweets**: you're given the quoted text too — grade the WHOLE unit.
   A "this." over a great point inherits some of the quote's value; a smug dunk
   over a strawman is still a dunk. If the quote is the only substance and the
   quoter adds nothing, don't let the quote alone push it high.
-- **Jokes**: a genuinely funny, sharp joke can reach 6–7 if the wit is the
-  substance; a lazy meme-format reply is a 2–3.
+- **Announcements**: specifics (what changed, numbers, availability) push it
+  up; pure momentum ("huge, more soon") pushes it down.
+- **AI content about making money** (selling courses, "AI side-hustle"
+  farming): grade it as money-flex, not as AI content — 1–3.
 - **Threads (single tweet seen in isolation)**: grade what's in front of you.
   A strong standalone opener scores on its own merit; "🧵👇" with nothing else
   is engagement-bait.
