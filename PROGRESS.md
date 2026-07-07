@@ -5,10 +5,47 @@ Point new sessions at this file + the PRD for full context.
 
 ---
 
-## ▶ RESUME HERE (2026-07-05)
+## ▶ RESUME HERE (2026-07-07)
 
-**M7–M10 backscroll build-out in progress** (roadmap below is the plan of record; one phase at a
-time, user approves between phases). Token auth + read-receipt digest are LIVE.
+**Models/evals rethink SHIPPED (user-approved), M11 interleave LIVE, M12 audit pool in place.**
+The offline gate is now a guardrail; the interleave is the verdict-maker. Let data accumulate
+~2 weeks — do NOT re-weight or tune against any pool meanwhile.
+
+- **Rethink phase ✅ 2026-07-07** — (1) reviews are 100% test (no arm trains on gold; v1 LR
+  demoted to behavioral-only training): balanced gate n=88 → **n=290**. (2) Every review-pool arm
+  gets a paired (arm − keyword) bootstrap diff CI; SHIP generalized to any candidate and requires
+  the diff CI to exclude 0. (3) `zscores` winsorize at ±2 (`Z_CLAMP`): the zero-inflated author
+  prior minted ±5σ outliers that swamped the blend (M10 live evidence: rank-1 at 78% author part);
+  landed BEFORE interleave activation so the experiment measures the fixed mix. (4) Default eval
+  output = review gate only; `npm run eval -- --all` prints the confounded supplementary pools.
+- **Gate verdict (2026-07-07, n=290, rubric coverage 290/290): HOLD ⛔ stands.** Keyword MAP
+  0.6493 [0.574, 0.724], NDCG@10 1.0000. **v1 LR is dead for real** — MAP 0.3918, diff CI
+  [−0.328, −0.180] excludes 0 (below random; five losses running, now at real n). **Rubric is the
+  best candidate: MAP 0.6351 [0.553, 0.726], diff CI [−0.082, +0.061] → statistically TIED with
+  keyword on the GENERIC starter rubric.** Taste 0.6052, mix 0.6066, both tied-ish. The n=88
+  "recency beats keyword" scare washed out at n=290 (pool-composition artifact, as suspected).
+- **Rubric scorer stall root-caused + fixed ✅** — at the 08:00 window the claude CLI rides out
+  multi-minute API backoff; the 120s SIGTERM killed healthy-but-throttled calls (CLI ignores
+  SIGTERM — 14-min zombie sessions observed), two kills tripped the abort, coverage decayed.
+  Fix: `CALL_TIMEOUT_MS` 120s → 600s + `killSignal: SIGKILL`. Review pool re-scored to 290/290.
+  OPTIONAL second daily scoring window: a ready-made `com.afy.rubric.plist` (20:00, idempotent
+  retry) was drafted but NOT installed (permission classifier flagged new launchd persistence —
+  correctly); user installs by hand if wanted (see chat 2026-07-07).
+- **M11 ✅ ACTIVATED 2026-07-07** — server restarted; live serve verified: digest_log rows carry
+  `arm` (22 mix / 23 keyword drafted, explore stays arm=null). The interleave clock starts NOW;
+  `npm run interleave` reads a verdict after ~2 weeks + the 30-judged-event floor.
+- **M12 ✅ built 2026-07-07** — review labels carry `served_lane` (VOTE_SERVE convention);
+  eval prints a REVIEW-EXPLORE audit pool: votes on ✧ day-hash-sampled cards are the only labels
+  no ranker selected → immune to serve-selection bias (the main pool drifts toward the serving
+  arm's own audit log as digest votes accumulate). Diagnostic for now (REVIEW_MIN_N floor);
+  today n=0 balanced — it grows exactly as fast as ✧ cards get voted (~5 served/day).
+- **User's parallel jobs (unchanged, now with sharper payoff):** personalize RUBRIC.md — the
+  GENERIC rubric already ties the champion, this is the highest-leverage free move (`npm run
+  rubric` re-scores under the new sha, then `npm run eval`); vote daily, ✧ explore cards
+  especially (they are the audit pool); optionally install the second scoring window plist.
+
+Token auth + read-receipt digest are LIVE. M7–M11 history below; CLAUDE.md's ship-gate section
+was updated to the new contract (guardrail + CI-gated SHIP + interleave as verdict-maker).
 
 - **Gap 5 ✅ live** — in-flow 👍/👎 on digest cards; reviewed tweets leave the feed. Vote on
   ✧ explore cards too, or the review pool skews toward taste-lane picks.
@@ -297,9 +334,36 @@ day one). Verdict timeline: ~2 weeks of dogfood, judged-event floor before any l
 **Non-goals:** >2 arms per matchup, bandits/adaptive traffic, weight learning, opens-as-labels,
 propensity-corrected training, any client UI change.
 
----
+### M12 — Models/evals rethink + serve-bias-free audit pool  ✅ BUILT + LIVE 2026-07-07
 
-## Ponytail audit applied (2026-07-02) — ~800 lines out, one product decision made
+> Built in the main session, user-approved as a package ("rethink the current models and evals").
+> Ingest tests 74 → 79 green. Four commits: M11 commit, rethink phase, rubric scorer fix, M12.
+
+**Problem:** the gate starved (70% of gold spent training an LR that lost five straight readings,
+below random), the review pool inherits the serving ranker's selection bias (votes land on served
+cards → the pool drifts toward "the mix's audit log" — the n=88 "recency beats keyword" scare was
+this), the author prior z-blew-up (M10: rank-1 at 78% author part), and rubric coverage silently
+decayed when the 08:00 scorer died (120s SIGTERM vs multi-minute API backoff).
+
+**Design (mostly deletions / demotions):**
+- Reviews 100% test (`splitByTime` routes review kinds to test); v1 LR trains behavioral-only.
+  No arm trains on reviews (M9 leak guard already excluded them from taste/prior) → n 88 → 290.
+- Per-arm paired (arm − keyword) MAP diff CIs; SHIP = any candidate, point-wise better on both
+  metrics AND diff CI excludes 0. Gate = guardrail; interleave = verdict-maker (CLAUDE.md updated).
+- `Z_CLAMP = 2` winsorized z in the mix — bounds any component at W·2; landed pre-activation so
+  the interleave measures the fixed mix from day one.
+- `served_lane` on review labels (VOTE_SERVE convention, read-only, tolerates missing digest_log);
+  eval prints REVIEW-EXPLORE — ✧ votes are the only labels no ranker selected. Floor: REVIEW_MIN_N.
+- rubric.ts: 600s call deadline + SIGKILL (CLI ignores SIGTERM mid-backoff — observed 14-min
+  zombies). Optional second daily scoring window plist drafted, NOT installed (user's call).
+
+**Invariants:** reviews stay eval-only gold (now literally 100% test); explore stays arm-null and
+doubles as the audit sampler; the audit pool is diagnostic until it clears the n floor — the gate
+verdict stays driven by REVIEW-ONLY; no weight tuning against any offline pool.
+
+**Non-goals (explicitly rejected in the rethink):** new model families (embeddings lost in M6,
+GBT stays deferred — labels, not capacity, are the bottleneck), weight grid-search, boosting the
+explore share (revisit only if the audit pool is still starved in a month).
 
 Repo-wide over-engineering audit, then applied in full. The product decision: **one delivery
 channel.** The per-flush v0-ranked iMessage texts duplicated the 08:00 digest text with a ranker
