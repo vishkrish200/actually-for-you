@@ -30,9 +30,13 @@ time, user approves between phases). Token auth + read-receipt digest are LIVE.
   daily.ts's teaser logs as channel `imessage`; `npm run funnel` reports opens + votes by
   lane/rank and mean mix parts by verdict. Server restarted, first live serve verified logging.
   Pre-M10 votes (n=70) have no serve context — from today, votes land attributable.
-- **NEXT: let funnel data accumulate over dogfood days, then read `npm run funnel` before any
-  re-weighting debate; M11 (interleaved online comparison) is the candidate next phase** —
-  user approves between phases.
+- **M11 🔨 in flight 2026-07-07** — team-draft interleaving (mix vs keyword) on the live digest,
+  blind + deterministic, `arm` column on digest_log, `npm run interleave` verdict with CI +
+  judged-event floor. See the M11 roadmap section. While it builds and after: let funnel +
+  interleave data accumulate over dogfood days — verdicts need ~2 weeks and the judged-event
+  floor; do NOT re-weight against the n=70 pool.
+- **User's parallel jobs:** personalize RUBRIC.md (then `npm run rubric` re-scores under the new
+  sha), and vote daily — ✧ explore cards especially (the serve-bias antidote).
 
 **Gate verdicts (2026-07-06, balanced n=70, rubric coverage 70/70):** dogfood day 1 added 71
 hand-signed reviews (30👍/41👎) — the pool jumped 52 → 70 and got HARDER for everyone: keyword MAP
@@ -209,6 +213,89 @@ v1 / rubric / mix side by side; tests green.
 
 **Acceptance:** tests green (serve logs rows; open endpoint appends; funnel runs on a fixture
 db); a day of dogfood shows web serves + opens accumulating in `afy.db`.
+
+### M11 — Interleaved online comparison (team-draft on the live digest)  ✅ BUILT 2026-07-07
+
+> Built by Opus subagent. **Activation-pending** (needs a server restart — the additive `arm` column
+> only lands on `afy.db` when the running server re-execs its schema block). Ingest tests **62 → 74**
+> green (new `interleave.test.ts` = 11: team-draft determinism snapshot + arm attributions, MATCHUP=null
+> byte-identical regression, explore-survives, no-cross-team-dup, and the report math — credit counts,
+> day-wins, floor refusal <30, TIED-when-CI-contains-0, LEAN-when-it-excludes-0, arm-null explore never
+> credited, arm-less-db tolerated; + 1 server.test.ts row proving digest_log serves carry `arm`). The
+> M9 `digest.test.ts` snapshots were pinned to `matchup:null` (they assert M9 *mix* order; the
+> interleaved slate has its own snapshot) — that pinning IS the byte-identical proof the plan wanted.
+> Key build facts / deviations, all sound:
+> (1) `MATCHUP: readonly [Arm,Arm] | null` in digest.ts, set `["mix","keyword"]`; `buildDigest` gained
+>     an optional `matchup` override (defaults to the const) purely for testability — `null` runs the
+>     literal pre-M11 code path, arm=null everywhere.
+> (2) Arm registry `ARM_SCORERS` over the SAME filtered pool: `mix`=mixScores final, `keyword`=AI_LEXICON
+>     hit count (imported from labels.ts — a RANKING signal, never a label), `taste`=the taste part
+>     alone. Each arm's list is MMR-`diversify`d (borrowing `.score` for the relevance term, then the
+>     true mix score/parts are restored — blind serving intact), then team-drafted. Stable tweet_id
+>     tiebreak (eval.ts convention) so the integer-valued keyword arm's many ties order deterministically.
+> (3) `teamDraft` seeds a mulberry32 PRNG off the digest `seed` (same determinism doctrine as the
+>     explore-lane hash — NO Math.random/Date.now); per round the PRNG picks which team drafts first,
+>     each team takes its top not-yet-taken candidate, the drafting arm is stamped on the slot, a `taken`
+>     set guarantees no tweet is drafted twice. Explore lane, fragment filter, exclusions, attachQuoted,
+>     read receipts: UNTOUCHED (explore stays arm=null, ~10%, interleaved).
+> (4) server.ts: additive `arm TEXT` on digest_log (CREATE + the ALTER migration pattern), threaded
+>     through `logServes`; the /digest handler passes item.arm; daily.ts unchanged (its teaser serves
+>     through the same path, so `arm` flows into its imessage rows automatically — verified).
+> (5) `interleave.ts` + `npm run interleave` (read-only): per-arm serves/opens/👍/👎 via the funnel's
+>     FIRST_SERVE/VOTE_SERVE conventions scoped to arm-attributed rows; credits = opens + 👍; day-level
+>     wins; paired seeded-bootstrap CI over DAYS on the credit-rate diff (eval.ts's PRNG shape); prints
+>     TIED when the CI contains 0 (incl. the degenerate [0,0] of identical arms), refuses any verdict
+>     below **30 judged events** (opens+votes) with a loud line, always prints coverage. Tolerates a db
+>     predating the `arm` column read-only (PRAGMA check → empty report, like eval's missing-table guard)
+>     — so day-one `npm run interleave` on the real db prints the insufficient-data line, verified.
+> **Activation:** restart the server (`launchctl kickstart -k gui/$(id -u)/com.afy.ingest`); the next
+> `/digest` serve writes arm-attributed rows. After ~2 weeks of dogfood + the 30-judged-event floor,
+> `npm run interleave` prints the first lean. (Client UNCHANGED — blind serving; the ✦ badge is mix
+> score/parts computed pool-wide, so it can't leak which arm drafted a card.) Do NOT re-weight against
+> the n=88 review pool meanwhile.
+
+**Problem:** the gate is offline and small-n; the funnel is observational. Neither answers "which
+ranker serves ME better, on my own feed, judged by my actual reading?" — the online eval
+backscroll's last paragraph wants. Interleaving answers it with position bias cancelled by
+construction, weeks sooner than the review pool can grow.
+
+**Design (team-draft interleaving, blind, deterministic):**
+- **Matchup pinned by a named const in digest.ts**: `MATCHUP: [armA, armB] | null` (null = plain
+  mix digest, today's behavior). Arms come from a tiny registry over the SAME candidate pool +
+  exclusions: `'mix'` (current mixScores final) | `'keyword'` (AI_LEXICON hit count — reuse the
+  lexicon from labels.ts) | `'taste'` (cosine part alone). **First matchup: mix vs keyword** —
+  the offline champion meets the product ranker online.
+- **Team-draft over the non-explore slots**: each arm ranks the pool (each list diversified with
+  the existing MMR first); per round the pick order comes from a PRNG seeded on the digest
+  `seed` (= digest_date — deterministic per day, same pattern as the explore hash; no
+  Math.random); each team drafts its top not-yet-picked candidate; the slot records which arm
+  drafted it. **Explore lane untouched** (~10%, interleaved, arm=NULL — the invariant survives).
+- **Blind serving — no UI difference between arms.** Every candidate gets mix score/parts
+  computed pool-wide regardless of drafting arm, so the ✦ badge renders identically; nothing in
+  client.html may reveal (or vary by) the drafting arm, or the votes it collects are biased.
+- **Attribution**: `digest_log` gains a nullable `arm` TEXT column (the additive-migration
+  pattern in server.ts already exists for exactly this). Serve rows carry it; opens/votes join
+  through the funnel's existing FIRST_SERVE / VOTE_SERVE conventions.
+- **`npm run interleave`** (new interleave.ts, read-only): per-arm serves, opens, 👍/👎 with the
+  funnel's join semantics; credits = opens + 👍 on arm-attributed serves; day-level wins;
+  paired seeded-bootstrap CI on the credit-rate diff (eval.ts pattern). Prints TIED when the CI
+  straddles 0, and refuses a verdict under a floor (<30 judged events → "insufficient data",
+  loudly). Coverage counts always printed.
+- daily.ts untouched: the iMessage teaser serves from the same slate; `arm` flows into its
+  digest_log rows automatically.
+
+**Invariants:** interleaving COMPARES rankers, it never mints labels (votes stay the only gold,
+opens stay comparison-only signal); the keyword arm on the product surface is still never a label
+source; explore lane survives; schema changes additive only; deterministic per digest_date.
+
+**Acceptance:** ingest tests green incl. new ones (team-draft determinism snapshot — fixed
+candidates + seed → asserted slate AND arm attributions; explore lane unchanged; report math on
+a fixture db with synthetic opens/votes; verdict floor honored). Live: a served digest writes
+arm-attributed rows; `npm run interleave` on the real db prints insufficient-data (expected on
+day one). Verdict timeline: ~2 weeks of dogfood, judged-event floor before any lean is printed.
+
+**Non-goals:** >2 arms per matchup, bandits/adaptive traffic, weight learning, opens-as-labels,
+propensity-corrected training, any client UI change.
 
 ---
 
@@ -898,6 +985,7 @@ impression) + 12 extension. All pass.
 | M8 | ✅ built 2026-07-04 | LLM rubric scorer on the Claude subscription (`claude -p`): `rubric.ts` + `RUBRIC.md` + eval arm. First verdict (generic rubric, 52/52): MAP 0.683 vs keyword 0.745 — closest challenger yet, gate still keyword's. Personalize RUBRIC.md → re-score → re-eval |
 | M9 | ✅ built + live 2026-07-05 | Weighted mix: taste + rubric + author knobs in `digest.ts`, eval arm "mix" |
 | M10 | ✅ built + live 2026-07-06 | Own-feed telemetry: `digest_log` + `digest_opens` + `npm run funnel` (prereq for interleaving/M11); serve rows carry score/parts for component attribution |
+| M11 | 🔨 in flight 2026-07-07 | Interleaved online comparison: team-draft mix vs keyword on the live digest, blind + deterministic, `npm run interleave` verdict with CI + judged-event floor |
 
 ---
 

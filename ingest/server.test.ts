@@ -262,3 +262,31 @@ describe("M10 digest telemetry", () => {
     assert.equal(n, 1); // still just the row from the previous test
   });
 });
+
+// ---- M11: digest_log serve rows carry the drafting `arm` (team-draft interleaving) ----
+describe("M11 digest_log arm attribution", () => {
+  it("a served digest writes arm on taste rows (mix|keyword under the live MATCHUP), null on explore", async () => {
+    // Enough distinct-token candidates that the live MATCHUP=["mix","keyword"] draft produces a
+    // multi-card slate; each taste slot must be stamped with the arm that drafted it, explore null.
+    await post({ tweets: [
+      { ...tweet, tweet_id: "m11-a", text: "an ai llm agent model reasoning benchmark with many tokens here" },
+      { ...tweet, tweet_id: "m11-b", text: "openai anthropic claude gemini training inference dataset embeddings" },
+      { ...tweet, tweet_id: "m11-c", text: "a totally different topic about sourdough bread and garden tomatoes today" },
+      { ...tweet, tweet_id: "m11-d", text: "prompt engineering rag gpu cuda pytorch tensor multimodal robotics agi" },
+    ] });
+    const before = (db.prepare("SELECT COALESCE(MAX(rowid),0) n FROM digest_log").get() as any).n;
+    const { status, json } = await req("GET", "/digest?limit=10");
+    assert.equal(status, 200);
+    const rows = db.prepare("SELECT tweet_id, lane, arm FROM digest_log WHERE rowid > ? ORDER BY rank").all(before) as any[];
+    assert.equal(rows.length, json.items.length, "one log row per served card, including the new arm column");
+    // Taste rows carry a real arm from the matchup; explore rows are arm-agnostic (null).
+    for (const r of rows) {
+      if (r.lane === "explore") assert.equal(r.arm, null, "explore serve row has arm=null");
+      else assert.ok(r.arm === "mix" || r.arm === "keyword", `taste serve row carries a matchup arm, got ${r.arm}`);
+    }
+    assert.ok(rows.some(r => r.arm === "mix" || r.arm === "keyword"), "at least one arm-attributed serve row was logged");
+    // The logged arm matches what buildDigest put on the served item (no drift between serve + log).
+    const byId = new Map(rows.map(r => [r.tweet_id, r.arm]));
+    for (const it of json.items) assert.equal(byId.get(it.tweet_id), it.arm ?? null, `arm logged == item.arm for ${it.tweet_id}`);
+  });
+});

@@ -78,10 +78,13 @@ db.exec(`
   -- reading client. funnel.ts joins these against reviews to answer "are 👎s concentrated at
   -- top ranks / in a lane / on high-author-prior cards?" — and they're the prereq for any
   -- future online ranker comparison (M11 interleaving).
+  -- M11 adds arm (nullable): which ranker drafted this taste-lane slot in a team-draft interleave
+  -- (digest.ts MATCHUP), NULL when interleaving is off or on explore rows. interleave.ts attributes
+  -- opens/votes back to it via the funnel's FIRST_SERVE/VOTE_SERVE joins.
   CREATE TABLE IF NOT EXISTS digest_log (
     rowid INTEGER PRIMARY KEY AUTOINCREMENT,
     digest_date TEXT, channel TEXT, tweet_id TEXT, rank INTEGER, lane TEXT,
-    score REAL, parts TEXT, ts TEXT
+    score REAL, parts TEXT, ts TEXT, arm TEXT
   );
   CREATE TABLE IF NOT EXISTS digest_opens (
     rowid INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -96,6 +99,9 @@ try { db.exec("ALTER TABLE tweets ADD COLUMN source TEXT DEFAULT 'net'"); } catc
 try { db.exec("ALTER TABLE tweets ADD COLUMN quoted_id TEXT"); } catch { /* already present */ }
 try { db.exec("ALTER TABLE impressions ADD COLUMN reported INTEGER"); } catch { /* already present */ }
 try { db.exec("ALTER TABLE impressions ADD COLUMN negative_feedback INTEGER"); } catch { /* already present */ }
+// M11: nullable arm on digest_log for DBs created before the interleave column existed. Existing
+// rows get NULL (pre-M11 serves have no drafting arm — correct: they weren't drafted by one).
+try { db.exec("ALTER TABLE digest_log ADD COLUMN arm TEXT"); } catch { /* already present */ }
 
 const stmts = {
   tweet: db.prepare(`
@@ -142,7 +148,7 @@ const stmts = {
   // Read the stored source (if any) to decide whether an incoming tweet outranks it (see below).
   tweetSource: db.prepare(`SELECT source FROM tweets WHERE tweet_id = ?`),
   digestLog: db.prepare(
-    `INSERT INTO digest_log (digest_date, channel, tweet_id, rank, lane, score, parts, ts) VALUES (?,?,?,?,?,?,?,?)`
+    `INSERT INTO digest_log (digest_date, channel, tweet_id, rank, lane, score, parts, ts, arm) VALUES (?,?,?,?,?,?,?,?,?)`
   ),
   digestOpen: db.prepare(
     `INSERT INTO digest_opens (tweet_id, ts) VALUES (?,?)`
@@ -152,12 +158,12 @@ const stmts = {
 // M10: append the served slate. Telemetry must never take down the product — a logging failure
 // is loud but the digest still serves. Every serve logs (page reloads included); funnel.ts
 // dedupes to first-serve per tweet at analysis time, append-only stays simple here.
-function logServes(items: { tweet_id: string; lane: string; score: number; parts: unknown }[], channel: "web" | "imessage") {
+function logServes(items: { tweet_id: string; lane: string; score: number; parts: unknown; arm?: string | null }[], channel: "web" | "imessage") {
   const ts = new Date().toISOString();
   db.prepare("BEGIN").run();
   try {
     items.forEach((it, i) =>
-      stmts.digestLog.run(ts.slice(0, 10), channel, it.tweet_id, i + 1, it.lane, it.score, JSON.stringify(it.parts), ts));
+      stmts.digestLog.run(ts.slice(0, 10), channel, it.tweet_id, i + 1, it.lane, it.score, JSON.stringify(it.parts), ts, it.arm ?? null));
     db.prepare("COMMIT").run();
   } catch (e) {
     db.prepare("ROLLBACK").run();

@@ -7,6 +7,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { hashStr } from "./ranker_v1.ts";
 import { loadRubricScores } from "./rubric.ts";
+import { AI_LEXICON } from "./labels.ts";
 
 export interface QuotedTweet {
   tweet_id: string;
@@ -36,6 +37,12 @@ export interface DigestItem {
   // M9: the weighted z-contributions that sum to `score` — the client tooltip's breakdown.
   parts: MixParts;
   lane: "taste" | "explore";
+  // M11: which ranker drafted this taste-lane slot in a team-draft interleave (digest_log carries
+  // it; the funnel/interleave report attributes opens+votes back to it). null when interleaving is
+  // OFF (MATCHUP=null) OR for explore-lane rows (explore is arm-agnostic — the invariant survives).
+  // BLIND: `arm` never reaches client.html — the ✦ badge renders off score/parts (computed pool-
+  // wide, identical across arms), so a vote can't be biased by which team served the card.
+  arm: Arm | null;
 }
 
 // ---- M9 weighted mix: final = W.taste·z(cosine) + W.rubric·z(rubric) + W.author·z(author_prior).
@@ -72,6 +79,91 @@ export function mixFinal(
     };
     return { final: parts.taste + parts.rubric + parts.author, parts };
   });
+}
+
+// ---- M11 team-draft interleaving: an ONLINE ranker comparison on the live digest. Two arms each
+// rank the SAME filtered candidate pool; a team-draft fills the non-explore slots (position bias
+// cancelled by construction — each team's picks are spread across ranks symmetrically), and every
+// served slot records which arm drafted it. Attribution flows through digest_log's `arm` column
+// into `npm run interleave`, which judges by opens+👍. This COMPARES rankers — it never mints
+// labels (votes stay the only gold; the keyword arm on the product surface is still never a label
+// source), and the explore lane is untouched (arm=null, ~10%, day-seeded — the invariant holds).
+export type Arm = "mix" | "keyword" | "taste";
+
+// THE matchup, pinned by a named const (the plan's design point). null = plain M9 mix digest —
+// today's behavior, EXACTLY (regression-tested byte-for-byte). First matchup: the offline champion
+// (keyword) meets the live product ranker (mix) on the user's own feed. Change this const to swap
+// matchups; buildDigest takes an override param so tests can pin either state without a global edit.
+export const MATCHUP: readonly [Arm, Arm] | null = ["mix", "keyword"];
+
+// An arm scorer orders a candidate that already carries its pool-wide mix score/parts. Higher =
+// better for that arm. mix = the M9 blend (what the digest ships); keyword = AI_LEXICON hit count
+// (the offline baseline, reusing labels.ts's lexicon — it is a RANKING signal here, never a label,
+// same as eval.ts's lexiconScore); taste = the taste part alone (a positive-weighted monotonic
+// transform of z(cosine), so ranking by parts.taste == ranking by the raw cosine — the pre-M9
+// shipped ranker as an arm). Text is lowercased once per candidate for the keyword arm.
+const ARM_SCORERS: Record<Arm, (c: { text: string; score: number; parts: MixParts }) => number> = {
+  mix: (c) => c.score,
+  keyword: (c) => { const t = c.text.toLowerCase(); return AI_LEXICON.reduce((n, kw) => n + (t.includes(kw) ? 1 : 0), 0); },
+  taste: (c) => c.parts.taste,
+};
+
+// Order the pool by one arm, then diversify with the SAME MMR the mix digest uses (the plan:
+// "diversify each arm's ranking with the existing MMR first, then draft"). We rank on the arm's
+// score but hand `diversify` a shallow copy whose `.score` is the arm score, so its relevance term
+// reflects THIS arm's ordering while the MMR token-overlap penalty is identical across arms. The
+// returned items still carry the real mix score/parts (diversify never mutates them) — blind
+// serving intact. Stable tiebreak on tweet_id (eval.ts convention) so equal-scoring rows — very
+// common for the integer-valued keyword arm — order deterministically, not by input/JS-sort luck.
+function armRanking(candidates: DigestItem[], arm: Arm, slots: number): DigestItem[] {
+  const score = ARM_SCORERS[arm];
+  const ranked = candidates
+    .map(c => ({ c, s: score(c) }))
+    .sort((a, b) => b.s - a.s || (a.c.tweet_id < b.c.tweet_id ? -1 : 1))
+    .map(x => ({ ...x.c, score: x.s })); // arm score drives diversify's relevance; real score restored below
+  const diversified = diversify(ranked, 0.75, slots);
+  // Restore each row's true mix score/parts (armRanking only borrowed `.score` to order/diversify).
+  const byId = new Map(candidates.map(c => [c.tweet_id, c]));
+  return diversified.map(d => byId.get(d.tweet_id)!);
+}
+
+// Team-draft (Radlinski et al.) made deterministic: instead of a per-round coin flip, a PRNG seeded
+// on the digest `seed` decides which team drafts first each round — same determinism doctrine as the
+// explore-lane hash (stable within a day, rotates daily, NO Math.random / Date.now). Each round the
+// first team appends its top not-yet-taken candidate, then the second team does the same; the
+// drafting arm is stamped on the slot. Both rankings draw from the same pool, so a `taken` set makes
+// every tweet appear at most once. Fills up to `slots` (the non-explore budget).
+export function teamDraft(rankA: DigestItem[], rankB: DigestItem[], armA: Arm, armB: Arm, seed: string, slots: number): DigestItem[] {
+  // mulberry32 seeded from the digest seed (eval.ts's bootstrap PRNG shape). Deterministic per seed.
+  let s = hashStr(seed) >>> 0;
+  const rand = () => { s = (s + 0x6d2b79f5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  const out: DigestItem[] = [];
+  const taken = new Set<string>();
+  let ia = 0, ib = 0;
+  const nextFrom = (rank: DigestItem[], i: number) => { while (i < rank.length && taken.has(rank[i].tweet_id)) i++; return i; };
+  const draftOne = (rank: DigestItem[], getI: () => number, setI: (n: number) => void, arm: Arm): boolean => {
+    const i = nextFrom(rank, getI());
+    setI(i);
+    if (i >= rank.length) return false;
+    const pick = rank[i];
+    taken.add(pick.tweet_id);
+    out.push({ ...pick, arm });
+    setI(i + 1);
+    return true;
+  };
+  while (out.length < slots) {
+    // PRNG picks which team drafts FIRST this round — the credit-symmetry of team-draft.
+    const aFirst = rand() < 0.5;
+    const first = aFirst
+      ? draftOne(rankA, () => ia, n => { ia = n; }, armA)
+      : draftOne(rankB, () => ib, n => { ib = n; }, armB);
+    if (out.length >= slots) break;
+    const second = aFirst
+      ? draftOne(rankB, () => ib, n => { ib = n; }, armB)
+      : draftOne(rankA, () => ia, n => { ia = n; }, armA);
+    if (!first && !second) break; // both rankings exhausted — nothing left to draft
+  }
+  return out;
 }
 
 // M9 author prior: log1p(kept-like count) per author_id. Derived from engagement_labels ONLY —
@@ -228,7 +320,8 @@ function diversify(items: DigestItem[], lambda = 0.75, limit = 50): DigestItem[]
 // tweet would otherwise rank identically tomorrow and reappear.
 export function buildDigest(
   db: DatabaseSync,
-  { limit = 50, days = 0, seed = new Date().toISOString().slice(0, 10) } = {},
+  { limit = 50, days = 0, seed = new Date().toISOString().slice(0, 10), matchup = MATCHUP }:
+    { limit?: number; days?: number; seed?: string; matchup?: readonly [Arm, Arm] | null } = {},
 ): DigestItem[] {
   const m = buildTaste(db);
   const prior = buildAuthorPrior(db);
@@ -245,11 +338,13 @@ export function buildDigest(
   // fragment filter applies to every lane — link-only / one-word replies aren't worth a slot,
   // EXCEPT quote tweets: "this." over a quoted tweet is real curation, the substance is the quote.
   const candidates = rows
-    .map(r => ({ ...r, media: parseMedia(r.media), lane: "taste" as const }))
+    .map(r => ({ ...r, media: parseMedia(r.media), lane: "taste" as const, arm: null as Arm | null }))
     .filter(r => r.quoted_id || tokenize(r.text).length >= 4);
 
   // M9: score = the weighted mix, z-scored over THIS candidate pool. An unscored rubric row is
   // null → z=0 (pool-neutral); an unknown author gets prior 0 (a real value — most of the pool).
+  // BLIND (M11): this runs pool-wide, BEFORE any arm drafts — every candidate carries the same mix
+  // score/parts no matter which arm later drafts it, so the client's ✦ badge can't leak the arm.
   const mixed = mixFinal(candidates.map(r => ({
     taste: scoreText(r.text, m),
     rubric: rubric.scores.get(r.tweet_id) ?? null,
@@ -258,11 +353,30 @@ export function buildDigest(
   candidates.forEach((r, i) => { r.score = mixed[i].final; r.parts = mixed[i].parts; });
 
   const exploreN = Math.max(1, Math.round(limit / 10));
-  const scored = candidates
-    .filter(r => r.score > 0) // above pool average (z-mix is centered) — the M9 analog of cosine>0
-    .sort((a, b) => b.score - a.score)
-    .slice(0, Math.max(limit * 4, 200)); // diversify within a generous head
-  const picked: DigestItem[] = diversify(scored, 0.75, Math.max(1, limit - exploreN));
+  const slots = Math.max(1, limit - exploreN); // non-explore budget (same in both paths)
+
+  // Non-explore slate. Two paths that share EVERYTHING downstream (explore, quote-attach, receipts):
+  //  - MATCHUP=null → the plain M9 mix digest, byte-for-byte as pre-M11 (arm stays null; the branch
+  //    below is the literal old code). Regression-tested against a fixed slate.
+  //  - MATCHUP set → team-draft: each arm ranks+diversifies the SAME pool, a seeded draft fills the
+  //    slots, and each row records the drafting arm. Explore is added identically afterward.
+  let picked: DigestItem[];
+  if (!matchup) {
+    const scored = candidates
+      .filter(r => r.score > 0) // above pool average (z-mix is centered) — the M9 analog of cosine>0
+      .sort((a, b) => b.score - a.score)
+      .slice(0, Math.max(limit * 4, 200)); // diversify within a generous head
+    picked = diversify(scored, 0.75, slots);
+  } else {
+    const [armA, armB] = matchup;
+    // Each arm ranks the whole filtered pool (no score>0 pre-filter: an arm may legitimately rank
+    // a below-mix-mean tweet first — e.g. keyword loves a high-AI-density tweet the mix docks on a
+    // cold author — and the draft, not a mix threshold, decides the slate). MMR-diversify each arm's
+    // list to `slots`, then team-draft. Explore still surfaces the truly un-drafted tail below.
+    const rankA = armRanking(candidates as DigestItem[], armA, slots);
+    const rankB = armRanking(candidates as DigestItem[], armB, slots);
+    picked = teamDraft(rankA, rankB, armA, armB, seed, slots);
+  }
 
   // Explore lane: sampled from candidates the taste head did NOT pick (zero-score included) by a
   // day-seeded hash — stable within a day, rotates daily, no Math.random. Interleaved, not
@@ -272,7 +386,7 @@ export function buildDigest(
     .filter(r => !inFeed.has(r.tweet_id))
     .sort((a, b) => hashStr(seed + a.tweet_id) - hashStr(seed + b.tweet_id))
     .slice(0, exploreN)
-    .map(r => ({ ...r, lane: "explore" as const }));
+    .map(r => ({ ...r, lane: "explore" as const, arm: null as Arm | null })); // explore is arm-agnostic — invariant
   const step = Math.max(1, Math.floor(picked.length / (explore.length + 1)));
   explore.forEach((e, i) => picked.splice(Math.min((i + 1) * step + i, picked.length), 0, e));
   // Resolve quote context only for the final slate (~limit rows), then drop the raw quoted_id and
@@ -285,9 +399,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const { DatabaseSync } = await import("node:sqlite");
   const db = new DatabaseSync(process.env.AFY_DB ?? "afy.db");
   const items = buildDigest(db, { limit: 20 });
-  console.log(`\nTop ${items.length} for you (M9 mix-ranked):\n`);
+  const mode = MATCHUP ? `M11 team-draft [${MATCHUP[0]} vs ${MATCHUP[1]}]` : "M9 mix-ranked";
+  console.log(`\nTop ${items.length} for you (${mode}):\n`);
   for (const it of items) {
     const who = it.author_handle ? `@${it.author_handle}` : "(unknown)";
-    console.log(`${it.score.toFixed(3)} ${it.lane === "explore" ? "✧" : " "} ${who.padEnd(18)} ${it.text.replace(/\s+/g, " ").slice(0, 90)}`);
+    // arm tag shows which ranker drafted each taste slot (blank for explore, whose arm is null).
+    const tag = it.lane === "explore" ? "✧ explore" : (it.arm ?? "—").padEnd(9);
+    console.log(`${it.score.toFixed(3)} ${tag.padEnd(10)} ${who.padEnd(18)} ${it.text.replace(/\s+/g, " ").slice(0, 80)}`);
   }
 }

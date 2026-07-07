@@ -44,7 +44,9 @@ describe("personalized digest (taste similarity)", () => {
   });
 
   it("buildDigest surfaces the AI candidate, excludes already-liked, ranks AI first", () => {
-    const items = buildDigest(seed(), { limit: 10 });
+    // matchup:null pins the M9 mix path — these tests assert M9 ranking semantics; the M11
+    // team-draft slate has its own snapshot in interleave.test.ts. (Default MATCHUP is now a matchup.)
+    const items = buildDigest(seed(), { limit: 10, matchup: null });
     assert.ok(!items.find(i => i.tweet_id.startsWith("L")), "already-liked tweets excluded");
     assert.equal(items[0]?.tweet_id, "C_ai", "AI candidate ranked first");
   });
@@ -71,7 +73,7 @@ describe("personalized digest (taste similarity)", () => {
   it("reviewed tweets leave the digest (👍 and 👎 alike — a vote is a read receipt)", () => {
     const db = seed();
     db.prepare("INSERT INTO reviews (tweet_id, verdict, ts) VALUES (?,?,?)").run("C_ai", -1, "2026-07-03");
-    const items = buildDigest(db, { limit: 10 });
+    const items = buildDigest(db, { limit: 10, matchup: null });
     assert.ok(!items.find(i => i.tweet_id === "C_ai"), "reviewed tweet excluded from every lane");
     assert.ok(items.length >= 1, "digest still serves the remaining candidates");
   });
@@ -88,7 +90,7 @@ describe("personalized digest (taste similarity)", () => {
     t.run("Q_miss", "m", "M", "llm agents reasoning models quoted from nowhere", "[]", "GONE", "2026-06-02", "2026-06-02");
     // limit 30 → exploreN 3 ≥ the below-pool-mean candidates, so every row surfaces in SOME lane
     // regardless of where the z-mix cut lands (this test asserts payload shape, not ranking).
-    const items = buildDigest(db, { limit: 30 });
+    const items = buildDigest(db, { limit: 30, matchup: null });
     const quoting = items.find(i => i.tweet_id === "Q_ing")!;
     assert.deepEqual(quoting.media, [{ type: "video", url: "https://pbs.twimg.com/vid_thumb.jpg" }], "media parsed to array");
     assert.equal((quoting.quoted as any)?.text, "the original llm agent reasoning benchmark thread", "quoted content joined in");
@@ -106,7 +108,7 @@ describe("personalized digest (taste similarity)", () => {
     t.run("Q_orig", "orig", "Orig", "llm agents and reasoning models benchmark results", "[]", null, "2026-06-01", "2026-06-01");
     t.run("Q_short", "s", "S", "this llm.", "[]", "Q_orig", "2026-06-02", "2026-06-02"); // <4 tokens
     t.run("F_short", "f", "F", "lol ok.", "[]", null, "2026-06-02", "2026-06-02");       // <4 tokens, no quote
-    const items = buildDigest(db, { limit: 30 }); // exploreN 3 → sub-mean rows still surface (see above)
+    const items = buildDigest(db, { limit: 30, matchup: null }); // exploreN 3 → sub-mean rows still surface (see above)
     assert.ok(items.find(i => i.tweet_id === "Q_short"), "short QUOTE tweet kept");
     assert.ok(!items.find(i => i.tweet_id === "F_short"), "short plain fragment still dropped");
   });
@@ -115,8 +117,8 @@ describe("personalized digest (taste similarity)", () => {
     // C_fin has zero token overlap with the likes, so the mix ranks it below the pool mean and only
     // explore can surface it. limit 20 → exploreN 2 covers both sub-mean candidates (C_off, C_fin),
     // so C_fin's presence is deterministic, not day-hash luck.
-    const a = buildDigest(seed(), { limit: 20, seed: "day1" });
-    const b = buildDigest(seed(), { limit: 20, seed: "day1" });
+    const a = buildDigest(seed(), { limit: 20, seed: "day1", matchup: null });
+    const b = buildDigest(seed(), { limit: 20, seed: "day1", matchup: null });
     assert.deepEqual(a.map(i => [i.tweet_id, i.lane]), b.map(i => [i.tweet_id, i.lane]), "same seed → same digest");
     const explore = a.filter(i => i.lane === "explore");
     assert.ok(explore.length >= 1, "explore lane present");
@@ -170,7 +172,9 @@ describe("M9 weighted mix (named knobs)", () => {
     //   final = 0.3·z_rubric + 0.2·z_author →
     //     M_auth +0.283 > M_rub +0.159 > 0 > M_plain −0.441 (below pool mean → explore-only)
     // M_auth (UNSCORED) outranking M_rub (scored 10) pins the z=0-neutral contract: under eval's −1
-    // sentinel M_auth would sink instead. Interleave puts the explore row at index 1.
+    // sentinel M_auth would sink instead. matchup:null → the pure M9 mix path (this test asserts the
+    // mix ORDER; the interleaved slate is snapshotted separately in interleave.test.ts). The explore
+    // row lands at index 1 (interleaved, not appended).
     const db = new DatabaseSync(":memory:");
     db.exec(`
       CREATE TABLE tweets (tweet_id TEXT PRIMARY KEY, author_id TEXT, author_handle TEXT, author_name TEXT,
@@ -195,7 +199,7 @@ describe("M9 weighted mix (named knobs)", () => {
     ins.run("M_rub", 10, "haiku", "testsha", "2026-07-01T00:00:00Z");
     ins.run("M_plain", 2, "haiku", "testsha", "2026-07-01T00:00:00Z");
 
-    const items = buildDigest(db, { limit: 10, seed: "day1" });
+    const items = buildDigest(db, { limit: 10, seed: "day1", matchup: null });
     assert.deepEqual(
       items.map(i => [i.tweet_id, i.lane]),
       [["M_auth", "taste"], ["M_plain", "explore"], ["M_rub", "taste"]],
