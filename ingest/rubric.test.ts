@@ -258,6 +258,29 @@ describe("eval rubric arm", () => {
     assert.ok(arm.map <= rnd.map + 1e-9, `mis-scored pool should not beat random, got rubric ${arm.map} vs random ${rnd.map}`);
   });
 
+  it("M12 provenance: served_lane follows the VOTE_SERVE convention; audit pool = explore votes only", () => {
+    const db = seedReviewPool();
+    // minimal digest_log — labels.ts only touches (tweet_id, lane, ts); real schema is server.ts's
+    db.exec(`CREATE TABLE digest_log (tweet_id TEXT, lane TEXT, ts TEXT)`);
+    const serve = db.prepare("INSERT INTO digest_log (tweet_id, lane, ts) VALUES (?,?,?)");
+    // rp0 voted at 01:00 on 2026-01-01 (seedReviewPool): explore serve BEFORE the vote → 'explore'
+    serve.run("rp0", "explore", "2026-01-01T00:30:00Z");
+    // rn0: taste serve before the vote → 'taste'; a LATER explore serve must NOT retro-attribute
+    serve.run("rn0", "taste", "2026-01-01T00:30:00Z");
+    serve.run("rn0", "explore", "2026-01-02T00:00:00Z");
+    // rp1: only serve is AFTER the vote → context-free, null
+    serve.run("rp1", "explore", "2026-02-02T00:00:00Z");
+
+    const byId = new Map(buildLabels(db).map(r => [r.tweet_id, r]));
+    assert.equal(byId.get("rp0")!.served_lane, "explore");
+    assert.equal(byId.get("rn0")!.served_lane, "taste", "latest serve AT-OR-BEFORE the vote wins");
+    assert.equal(byId.get("rp1")!.served_lane, null, "a serve after the vote is not context");
+    assert.equal(byId.get("rp2")!.served_lane, null, "never served → null");
+    // and a db with NO digest_log at all (the plain fixture) stays null, read-only
+    const bare = buildLabels(seedReviewPool());
+    assert.ok(bare.filter(r => r.kind.startsWith("review")).every(r => r.served_lane === null));
+  });
+
   it("no rubric scores at all → no arm, no coverage (eval still runs)", () => {
     const db = seedReviewPool();
     const res = runEval(buildLabels(db), loadRubricScores(db)); // rubric_scores empty

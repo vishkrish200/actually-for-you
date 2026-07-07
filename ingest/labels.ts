@@ -19,6 +19,12 @@ export interface LabeledRow {
   // runs on the same-era pool (pos vs hard_neg) only. The review_* kinds are cleaner still: their
   // sign is a human verdict, not the keyword lexicon, so they get their own gate. See eval.ts.
   kind: "pos" | "hard_neg" | "easy_neg" | "review_pos" | "review_neg";
+  // M12 — review kinds only: lane of the serve this vote attributes to (funnel's VOTE_SERVE
+  // convention — latest serve at-or-before the vote). 'explore' votes are the serve-bias-free
+  // audit subset: the ✧ lane is day-hash-sampled, no ranker chose those cards, so votes on them
+  // are the only labels whose SELECTION no arm influenced. null = context-free (pre-M10 review
+  // mode / never served); undefined on non-review kinds.
+  served_lane?: string | null;
   weight: number;        // IPW hook — uniform 1 for now (see note below)
   text: string;
   author_id: string;
@@ -59,6 +65,7 @@ export function buildLabels(db: DatabaseSync): LabeledRow[] {
     char_len: (r.text as string).length,
     media_present: r.media && r.media !== "" && r.media !== "[]" ? 1 : 0,
     is_thread: r.is_thread ? 1 : 0,
+    served_lane: r.served_lane ?? null,
   });
 
   // POSITIVES: engagement_labels − label_prunes, with text. (age prunes are dropped here too.)
@@ -99,12 +106,24 @@ export function buildLabels(db: DatabaseSync): LabeledRow[] {
   // their sign is a human call, not the AI lexicon that curated the harvested-like boundary, so a
   // model beating a review_pos-vs-review_neg gate genuinely wins (unlike the near-circular keyword
   // gate). An explicit verdict OVERRIDES the harvested sources below (it's the stronger signal).
+  // M12 provenance: LEFT JOIN the attributed serve's lane (latest serve at-or-before the vote —
+  // the exact VOTE_SERVE convention from funnel.ts). Tolerate a db predating digest_log (fixture
+  // dbs, old backups): the labels pipeline stays read-only, so probe sqlite_master, never CREATE.
+  const hasDigestLog = !!db.prepare(
+    `SELECT 1 FROM sqlite_master WHERE type='table' AND name='digest_log'`,
+  ).get();
+  const laneJoin = hasDigestLog
+    ? `LEFT JOIN digest_log dl ON dl.tweet_id = r.tweet_id AND dl.ts =
+         (SELECT MAX(ts) FROM digest_log WHERE tweet_id = r.tweet_id AND ts <= r.ts)`
+    : "";
   const reviewed = db.prepare(`
     SELECT t.tweet_id, t.text, t.author_id, t.created_at, t.media, t.is_thread, r.verdict
+      ${hasDigestLog ? ", dl.lane AS served_lane" : ""}
     FROM reviews r
     JOIN (SELECT tweet_id, MAX(ts) mts FROM reviews GROUP BY tweet_id) l
       ON r.tweet_id = l.tweet_id AND r.ts = l.mts
     JOIN tweets t ON r.tweet_id = t.tweet_id
+    ${laneJoin}
     WHERE t.text IS NOT NULL AND t.text != ''
     GROUP BY t.tweet_id
   `).all() as any[];

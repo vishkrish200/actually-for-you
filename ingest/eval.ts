@@ -128,6 +128,12 @@ const pctile = (xs: number[], p: number) => [...xs].sort((a, b) => a - b)[Math.f
 
 export interface EvalResult {
   reviewOnly: PoolResult; // review_pos vs review_neg — hand-signed, NON-CIRCULAR — THE real ship gate
+  // M12: votes attributed to ✧ explore-lane serves ONLY. The main review pool is serve-selected —
+  // most votes land on cards the mix ranked up, so 👎s concentrate in the serving arm's own
+  // high-score region and the pool drifts toward "the mix's audit log". Explore cards are
+  // day-hash-sampled (no ranker chose them), so this subset is the serve-bias-free read. Small
+  // for now; it grows exactly as fast as ✧ cards get voted. Diagnostic, not yet the gate.
+  reviewAudit: PoolResult;
   sameEra: PoolResult;    // pos vs hard_neg — era-matched but keyword-curated (near-circular baseline)
   full: PoolResult;       // pos vs all negs — era-confounded, supplementary
   rubricCoverage?: RubricCoverage; // M8: how much of the review pool the LLM has actually scored
@@ -225,30 +231,40 @@ export function runEval(rows: LabeledRow[], rubric?: RubricScores, mix?: MixInpu
     sha: rubric.sha,
   };
 
-  // Review-pool-only arms. rubric = the pure LLM judge (M8, −1 rank-last sentinel for missing).
-  // taste = the pre-M9 shipped ranker (digest cosine) — the status quo the mix must justify itself
-  // against, not just keyword. mix = THE digest formula (digest.mixFinal, weights and all): z-scored
-  // ONCE over the full review test pool and frozen (the bootstrap resamples frozen per-row scores,
-  // same as every other arm); missing rubric is z=0 pool-neutral here, never −1 (the M9 contract).
-  const extra: [string, (r: LabeledRow) => number][] = [];
-  if (rubric) extra.push(["rubric (LLM judge)", rubricScorer(rubric)]);
-  if (mix) {
-    const tasteOf = (r: LabeledRow) => scoreText(r.text, mix.taste);
-    extra.push(["taste (digest cosine)", tasteOf]);
-    const finals = mixFinal(reviewTest.map(r => ({
-      taste: tasteOf(r),
-      rubric: rubric?.scores.get(r.tweet_id) ?? null,
-      author: mix.authorPrior.get(r.author_id) ?? 0,
-    })));
-    const byId = new Map(reviewTest.map((r, i) => [r.tweet_id, finals[i].final]));
-    extra.push(["mix (M9 digest blend)", (r) => byId.get(r.tweet_id) ?? 0]);
-  }
+  // M12: the serve-bias-free audit pool — review votes whose attributed serve was a ✧ explore card.
+  const auditTest = balancePool(test.filter(r =>
+    (r.kind === "review_pos" || r.kind === "review_neg") && r.served_lane === "explore"));
+
+  // Review-pool-only arms, built per pool. rubric = the pure LLM judge (M8, −1 rank-last sentinel
+  // for missing). taste = the pre-M9 shipped ranker (digest cosine) — the status quo the mix must
+  // justify itself against, not just keyword. mix = THE digest formula (digest.mixFinal, weights
+  // and all): z-scored over the pool being ranked — the mix's own definition, matching buildDigest —
+  // then frozen (the bootstrap resamples frozen per-row scores, same as every other arm); missing
+  // rubric is z=0 pool-neutral here, never −1 (the M9 contract). Per-pool z means the mix row is
+  // comparable WITHIN a pool, not across pools.
+  const armsFor = (pool: LabeledRow[]): [string, (r: LabeledRow) => number][] => {
+    const extra: [string, (r: LabeledRow) => number][] = [];
+    if (rubric) extra.push(["rubric (LLM judge)", rubricScorer(rubric)]);
+    if (mix) {
+      const tasteOf = (r: LabeledRow) => scoreText(r.text, mix.taste);
+      extra.push(["taste (digest cosine)", tasteOf]);
+      const finals = mixFinal(pool.map(r => ({
+        taste: tasteOf(r),
+        rubric: rubric?.scores.get(r.tweet_id) ?? null,
+        author: mix.authorPrior.get(r.author_id) ?? 0,
+      })));
+      const byId = new Map(pool.map((r, i) => [r.tweet_id, finals[i].final]));
+      extra.push(["mix (M9 digest blend)", (r) => byId.get(r.tweet_id) ?? 0]);
+    }
+    return extra;
+  };
 
   return {
-    // CI only on the review pool — it's the gate that gets trusted, and the one that's small enough
+    // CI only on the review pools — they're the gates that get trusted, and the ones small enough
     // to need error bars. The supplementary pools are confounded; tighter bars wouldn't make them mean more.
-    // The extra arms ride ONLY on this pool (the honest gate); the supplementary pools stay as-is.
-    reviewOnly: evalPool("REVIEW-ONLY (hand-signed 👍 vs 👎) — NON-CIRCULAR SHIP GATE", reviewTest, v1, v1NoAuthor, true, extra),
+    // The extra arms ride ONLY on these pools (the honest gates); the supplementary pools stay as-is.
+    reviewOnly: evalPool("REVIEW-ONLY (hand-signed 👍 vs 👎) — NON-CIRCULAR SHIP GATE", reviewTest, v1, v1NoAuthor, true, armsFor(reviewTest)),
+    reviewAudit: evalPool("REVIEW-EXPLORE (✧-lane votes only) — SERVE-BIAS-FREE AUDIT", auditTest, v1, v1NoAuthor, true, armsFor(auditTest)),
     sameEra: evalPool("SAME-ERA (pos vs topical-prune negs) — keyword-curated, supplementary", sameEraTest, v1, v1NoAuthor),
     full: evalPool("FULL (pos vs all negs) — era-confounded, supplementary", test, v1, v1NoAuthor),
     rubricCoverage,
@@ -304,12 +320,20 @@ export function formatEval(res: EvalResult, { all = false } = {}): string {
       : `\n   best candidate (${best.name}): (arm − keyword) MAP CI [${best.diffVsKw[0].toFixed(3)}, ${best.diffVsKw[1].toFixed(3)}] excludes 0 → the gap is real at n=${r.n}, not sampling noise.`
     : "";
   const coverage = formatRubricCoverage(res.rubricCoverage);
+  // M12 audit pool: print it always (movement is visible early), but refuse to let a thin n read
+  // as a verdict — same doctrine as the interleave's judged-event floor.
+  const audit = res.reviewAudit;
+  const auditNote = audit.n < REVIEW_MIN_N
+    ? `⏳ audit pool too thin to trust (n=${audit.n} < ${REVIEW_MIN_N}) — keep voting ✧ explore cards; this is the serve-bias-free gate growing.`
+    : `audit pool at n=${audit.n} — large enough to read; where it disagrees with REVIEW-ONLY above, trust the audit (no serve bias).`;
   const supplementary = all
     ? [formatPool(res.sameEra), "", formatPool(res.full), ""]
     : ["(supplementary same-era/full pools hidden — `npm run eval -- --all` to print them)", ""];
   return [
     formatPool(res.reviewOnly),
     ...(coverage ? [coverage] : []), "",
+    ...(audit.n > 0 ? [formatPool(audit)] : []), // an empty pool's all-zero table is noise; the note suffices
+    auditNote, "",
     ...supplementary,
     gate + ciNote,
   ].join("\n");

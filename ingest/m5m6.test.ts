@@ -107,6 +107,24 @@ describe("split & label sanity", () => {
     assert.ok(res.full.rows.find(r => r.name === "random"));
   });
 
+  it("M12 audit pool: reviewAudit ranks ONLY explore-served votes; reviewOnly keeps them all", () => {
+    const rows: LabeledRow[] = [];
+    for (let i = 0; i < 30; i++) {
+      const d = `2024-0${1 + (i % 6)}-01T00:00:00Z`;
+      // 15/15 explore-served + 15/15 taste-served + 10 context-free — all review kind
+      const lane = i < 15 ? "explore" : "taste";
+      rows.push(mk({ tweet_id: `ap${i}`, label: 1, kind: "review_pos", text: `good ${i}`, created_at: d, served_lane: lane }));
+      rows.push(mk({ tweet_id: `an${i}`, label: 0, kind: "review_neg", text: `bad ${i}`, created_at: d, served_lane: lane }));
+    }
+    for (let i = 0; i < 10; i++) {
+      rows.push(mk({ tweet_id: `cf${i}`, label: i % 2 as 0 | 1, kind: i % 2 ? "review_pos" : "review_neg", created_at: "2024-01-01T00:00:00Z", served_lane: null }));
+    }
+    const res = runEval(rows);
+    assert.equal(res.reviewAudit.n, 30, "audit pool = balanced explore-served votes only (15/15)");
+    assert.equal(res.reviewOnly.n, 70, "main gate keeps every review row (35 pos / 35 neg balanced)");
+    assert.ok(res.reviewAudit.rows.find(r => r.name.startsWith("keyword")), "audit pool ranks the same arms");
+  });
+
   it("behavioral probe: detects dwell signal when present, and random stays ~0.5 on the balanced pool", () => {
     const seen = (o: Partial<SeenRow>): SeenRow => ({
       tweet_id: "0", label: 0, dwell: 0, opened: 0, profile: 0, visible: 1, last_ts: 0, ...o,
