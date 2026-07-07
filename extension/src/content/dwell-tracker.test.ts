@@ -141,6 +141,27 @@ describe("DwellTracker state machine", () => {
     expect(events[0].dwell_ms).toBeLessThanOrEqual(30000); // clamped, not 60000
   });
 
+  it("watchdog: scrolled off-screen with a dropped IO exit stops the timer (no 30s phantom)", () => {
+    const el = makeTweetEl("1515");
+    (tracker as any).observeTimeline();
+
+    intersect(tracker, el, 1.0);            // becomes visible, timer starts
+    vi.advanceTimersByTime(2000);           // 2s of genuine dwell
+
+    // Scroll it fully above the viewport, but the IO exit event is DROPPED (the leak). jsdom
+    // has no layout, so mock the geometry the watchdog reads: rect entirely above the viewport.
+    el.getBoundingClientRect = () =>
+      ({ top: -900, bottom: -400, height: 500, left: 0, right: 500, width: 500, x: 0, y: -900, toJSON() {} }) as DOMRect;
+
+    vi.advanceTimersByTime(30000);          // 30s pass with NO exit event — timer would leak
+    tracker.pauseAll();                     // drain whatever's left
+
+    expect(events).toHaveLength(1);
+    // Watchdog stopped the timer ~1s after it went off-screen, so ~2s dwell — NOT 30s.
+    expect(events[0].dwell_ms).toBeGreaterThanOrEqual(2000);
+    expect(events[0].dwell_ms).toBeLessThan(4000);
+  });
+
   it("engagement: DOM like-flip during the impression is captured (catches keyboard, not just clicks)", () => {
     const el = makeTweetEl("888");
     (tracker as any).observeTimeline();

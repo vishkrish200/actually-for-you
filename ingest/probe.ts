@@ -32,8 +32,9 @@ const VIEWED_PCT = 0.5;
 // Same trusted-dwell definition the v0 ranker uses (ranker.ts TRUSTED_DWELL): the capture layer leaks
 // IntersectionObserver exits under virtualized scroll, so raw dwell is untrustworthy. MAX-not-SUM +
 // 60s cap + drop flicks / velocity≥5 is what makes a dwell number mean "actually read this".
+// dwell_ms=30000 is exactly MAX_INTERVAL_MS — a leaked timer clamped at the cap, not a read; drop it.
 const TRUSTED_DWELL =
-  `MAX(CASE WHEN flicked = 0 AND COALESCE(scroll_velocity_at_entry, 99) < 5 THEN MIN(dwell_ms, 60000) ELSE 0 END)`;
+  `MAX(CASE WHEN flicked = 0 AND COALESCE(scroll_velocity_at_entry, 99) < 5 AND dwell_ms <> 30000 THEN MIN(dwell_ms, 60000) ELSE 0 END)`;
 
 export function buildSeen(db: DatabaseSync): SeenRow[] {
   return (db.prepare(`

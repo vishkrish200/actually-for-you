@@ -13,8 +13,26 @@ const FLICK_VELOCITY = 5; // px/ms
 // real impressions of 179s–855s on tweets that were only glanced at, and identical leaked
 // values shared across several tweets drained at the same tab-blur. No genuine glance at a
 // single tweet exceeds this without an intervening IO event, so clamp the interval.
-// ponytail: hard cap; a geometry watchdog could credit exact visible time if precision matters.
+// ponytail: hard cap; the geometry watchdog below is the root fix — this stays as a backstop.
 const MAX_INTERVAL_MS = 30_000;
+
+// Root fix for the leak the cap above only bounds: IntersectionObserver exit events get dropped
+// under X's fast virtualized scroll, so a running timer never stops and leaks off-screen time.
+// Re-check real geometry on this interval and stop any timer whose tweet fell below the gate.
+// Bounds a leak to ~one tick instead of MAX_INTERVAL_MS.
+const WATCHDOG_MS = 1_000;
+
+// Vertical visible fraction vs. viewport — mirrors the IntersectionObserver ratio for full-width
+// tweet cells (horizontal is always fully in view). ponytail: vertical-only; X tweets span the column.
+// Returns -1 ("unmeasurable") for a zero-height rect (detached / display:none node, or jsdom under
+// test) — the sweep leaves those alone; node-recycle + IO already handle removed nodes.
+function visibleFraction(el: HTMLElement): number {
+  const r = el.getBoundingClientRect();
+  if (r.height <= 0) return -1;
+  const vh = window.innerHeight || document.documentElement.clientHeight;
+  const visible = Math.max(0, Math.min(r.bottom, vh) - Math.max(r.top, 0));
+  return visible / r.height;
+}
 
 interface TweetState {
   impressionId: string;
@@ -115,6 +133,7 @@ export class DwellTracker {
   private prevScrollTs = Date.now();
   private scrollVelocity = 0;
   private io!: IntersectionObserver;
+  private watchdog: ReturnType<typeof setInterval> | null = null;
   private onImpression: OnImpression;
   private onContent?: OnContent;
   // tweet_ids we've already DOM-scraped this content-script lifetime — scrape once per id, the
@@ -151,6 +170,9 @@ export class DwellTracker {
 
     // Engagement clicks
     document.addEventListener("click", this.handleClick.bind(this), true);
+
+    // Geometry watchdog: stop timers the IntersectionObserver failed to (dropped exit events).
+    this.watchdog = setInterval(() => this.sweepTimers(), WATCHDOG_MS);
 
     // No hovercard observer: it blanket-attributed "hovercard" to every in-flight tweet (useless
     // data) at the cost of a second document-wide MutationObserver, and nothing downstream ever
@@ -271,6 +293,22 @@ export class DwellTracker {
     if (state.timerStart === null) return;
     state.dwellMs += Math.min(Date.now() - state.timerStart, MAX_INTERVAL_MS);
     state.timerStart = null;
+  }
+
+  // Stop any running timer whose tweet is no longer really visible (the IO exit that should have
+  // stopped it was dropped). Without this a leaked timer credits off-screen time up to the cap.
+  private sweepTimers() {
+    if (this.paused) return;
+    for (const [tweetId, state] of this.states) {
+      if (state.timerStart === null) continue;
+      // Node recycled to a different tweet → this impression is over; finalize (drains its timer).
+      if (this.extractTweetId(state.el) !== tweetId) {
+        this.finalize(tweetId);
+        continue;
+      }
+      const frac = visibleFraction(state.el);
+      if (frac >= 0 && frac < VISIBILITY_THRESHOLD) this.stopTimer(state);
+    }
   }
 
   pauseAll() {

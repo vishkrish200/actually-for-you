@@ -372,7 +372,10 @@ export const server = http.createServer(async (req, res) => {
       SELECT i.tweet_id,
         t.author_handle, t.author_name, t.author_id, t.text, t.media, t.quoted_id,
         t.created_at, t.likes, t.rts, t.replies, t.views,
-        MAX(CASE WHEN i.flicked=0 AND COALESCE(i.scroll_velocity_at_entry,99) < 5
+        -- dwell_ms=30000 is exactly MAX_INTERVAL_MS: a leaked timer clamped at the cap (dropped
+        -- IntersectionObserver exit under virtualized scroll), not a real read. Untrusted here.
+        -- Root fix is the extension geometry watchdog; this drops the historical sentinel rows.
+        MAX(CASE WHEN i.flicked=0 AND COALESCE(i.scroll_velocity_at_entry,99) < 5 AND i.dwell_ms <> 30000
                  THEN MIN(i.dwell_ms, 60000) ELSE 0 END) AS trusted_dwell,
         MAX(i.ts) AS last_seen
       FROM impressions i
