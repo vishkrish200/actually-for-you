@@ -123,8 +123,9 @@ describe("M11 team-draft interleaving (digest side)", () => {
 
 // ---- interleave.ts report math ----
 // Fixture: mix drafted A(rank1) & C(rank3); keyword drafted B(rank2) & D(rank4), all on 2026-07-06.
-// A opened + 👍 (mix: 2 credits). B opened (keyword: 1 credit). C 👎 (mix: 0 credits, 1 judged).
-// D nothing. A second day 2026-07-07: mix drafts E (opened → 1 credit), keyword drafts F (nothing).
+// Net credit = opens + 👍 − 👎. A opened + 👍 (+2). B opened (keyword +1). C 👎 (−1, still 1 judged).
+// D nothing. Second day 2026-07-07: mix drafts E (opened → +1), keyword drafts F (nothing). So mix
+// nets 2 (A:+2, C:−1, E:+1) and keyword nets 1 (B) — and the 👎 on C makes day 07-06 a 1–1 tie.
 // Judged events = opens(A,B,E)=3 + votes(A,C)=2 = 5 → BELOW the floor, so the base fixture refuses.
 function reportSeed(): DatabaseSync {
   const db = new DatabaseSync(":memory:");
@@ -180,10 +181,10 @@ describe("M11 interleave report (read-only math)", () => {
     assert.equal(mix.opened, 2, "A and E opened"); // C not opened
     assert.equal(mix.up, 1, "A 👍");
     assert.equal(mix.down, 1, "C 👎");
-    assert.equal(mix.credits, 3, "credits = opens(2) + 👍(1)");
+    assert.equal(mix.credits, 2, "net credit = opens(2) + 👍(1) − 👎(1)");
     assert.equal(kw.served, 3, "keyword drafted B, D (day1) + F (day2)");
     assert.equal(kw.opened, 1, "only B opened");
-    assert.equal(kw.credits, 1, "credits = opens(1) + 👍(0)");
+    assert.equal(kw.credits, 1, "net credit = opens(1) + 👍(0) − 👎(0)");
     // Judged = opens(A,B,E)=3 + votes(A,C)=2 = 5 < 30.
     assert.equal(r.judged, 5);
     assert.match(r.verdict, /insufficient data \(5 judged events, floor 30\)/);
@@ -198,14 +199,15 @@ describe("M11 interleave report (read-only math)", () => {
   });
 
   it("day-level wins: the arm with more credits wins the day; ties counted separately", () => {
-    // day 2026-07-06: mix credits = A(open+👍=2), C(0) = 2; keyword = B(open=1), D(0) = 1 → mix wins.
-    // day 2026-07-07: mix credits = E(open=1) = 1; keyword = F(0) = 0 → mix wins. keyword wins 0.
+    // day 2026-07-06: mix credits = A(open+👍=2) + C(👎=−1) = 1; keyword = B(open=1) + D(0) = 1 → TIE
+    // (the 👎 on C drags mix to parity — before net credit this was a 2–1 mix win, not a tie).
+    // day 2026-07-07: mix credits = E(open=1) = 1; keyword = F(0) = 0 → mix wins. So mix 1, kw 0, 1 tie.
     const r = interleaveReport(reportSeed());
     assert.deepEqual(r.dayWins.map(d => ({ ...d })), [
       { arm: "keyword", days_won: 0 },
-      { arm: "mix", days_won: 2 },
+      { arm: "mix", days_won: 1 },
     ]);
-    assert.equal(r.tiedDays, 0);
+    assert.equal(r.tiedDays, 1);
   });
 
   it("above the floor: paired-bootstrap CI produces a LEAN when one arm dominates every day", () => {
@@ -256,5 +258,94 @@ describe("M11 interleave report (read-only math)", () => {
     assert.equal(r.arms.length, 0);
     assert.equal(r.judged, 0);
     assert.match(r.verdict, /no .?arm.? column yet/);
+  });
+
+  it("a down-only day RESOLVES instead of tying 0–0: two 👎 to arm A → arm B wins the day", () => {
+    // Before net credit this day had no opens/👍 → 0–0 tie. Now mix's two 👎 debit it to −2 while
+    // keyword sits at 0, so keyword wins the day it never used to (0 > −2). Direct proof the 👎 counts.
+    const db = new DatabaseSync(":memory:");
+    db.exec(`
+      CREATE TABLE digest_log (rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+        digest_date TEXT, channel TEXT, tweet_id TEXT, rank INTEGER, lane TEXT, score REAL, parts TEXT, ts TEXT, arm TEXT);
+      CREATE TABLE digest_opens (rowid INTEGER PRIMARY KEY AUTOINCREMENT, tweet_id TEXT, ts TEXT);
+      CREATE TABLE reviews (rowid INTEGER PRIMARY KEY AUTOINCREMENT, tweet_id TEXT, verdict INTEGER, ts TEXT);
+    `);
+    const serve = db.prepare("INSERT INTO digest_log (digest_date,channel,tweet_id,rank,lane,score,parts,ts,arm) VALUES (?,?,?,?,?,1.0,'{}',?,?)");
+    const vote = db.prepare("INSERT INTO reviews (tweet_id, verdict, ts) VALUES (?,?,?)");
+    serve.run("2026-10-01", "web", "P", 1, "taste", "2026-10-01T08:00:00Z", "mix");
+    serve.run("2026-10-01", "web", "Q", 2, "taste", "2026-10-01T08:00:00Z", "mix");
+    serve.run("2026-10-01", "web", "R", 3, "taste", "2026-10-01T08:00:00Z", "keyword");
+    vote.run("P", -1, "2026-10-01T08:10:00Z"); // mix 👎
+    vote.run("Q", -1, "2026-10-01T08:11:00Z"); // mix 👎
+    const r = interleaveReport(db);
+    const mix = r.arms.find(a => a.arm === "mix")!;
+    assert.equal(mix.down, 2, "both 👎 attributed to mix");
+    assert.equal(mix.credits, -2, "net credit = 0 opens + 0 👍 − 2 👎");
+    assert.deepEqual(r.dayWins.map(d => ({ ...d })), [
+      { arm: "keyword", days_won: 1 }, // keyword(0) > mix(−2) → keyword wins a day that used to tie 0–0
+      { arm: "mix", days_won: 0 },
+    ]);
+    assert.equal(r.tiedDays, 0, "no longer a 0–0 tie — the downvotes resolve the day");
+  });
+
+  it("net-negative credits: credit_rate goes negative (not clamped) and the report still verdicts", () => {
+    // mix draws a 👎 every day with no opens/👍 → net −1/day → credit_rate −1.0. keyword opens a card
+    // every day → +1/day. Downs also carry the judged floor, so the CI computes and must LEAN keyword.
+    const db = new DatabaseSync(":memory:");
+    db.exec(`
+      CREATE TABLE digest_log (rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+        digest_date TEXT, channel TEXT, tweet_id TEXT, rank INTEGER, lane TEXT, score REAL, parts TEXT, ts TEXT, arm TEXT);
+      CREATE TABLE digest_opens (rowid INTEGER PRIMARY KEY AUTOINCREMENT, tweet_id TEXT, ts TEXT);
+      CREATE TABLE reviews (rowid INTEGER PRIMARY KEY AUTOINCREMENT, tweet_id TEXT, verdict INTEGER, ts TEXT);
+    `);
+    const serve = db.prepare("INSERT INTO digest_log (digest_date,channel,tweet_id,rank,lane,score,parts,ts,arm) VALUES (?,?,?,?,?,1.0,'{}',?,?)");
+    const open = db.prepare("INSERT INTO digest_opens (tweet_id, ts) VALUES (?,?)");
+    const vote = db.prepare("INSERT INTO reviews (tweet_id, verdict, ts) VALUES (?,?,?)");
+    for (let d = 1; d <= 35; d++) {
+      const date = `2026-12-${String(d).padStart(2, "0")}`, ts = `${date}T08:00:00Z`;
+      serve.run(date, "web", `M${d}`, 1, "taste", ts, "mix");
+      serve.run(date, "web", `K${d}`, 2, "taste", ts, "keyword");
+      vote.run(`M${d}`, -1, `${date}T08:10:00Z`); // mix 👎 every day → mix net negative
+      open.run(`K${d}`, `${date}T08:05:00Z`);     // keyword opened every day → keyword positive
+    }
+    const r = interleaveReport(db);
+    const mix = r.arms.find(a => a.arm === "mix")!;
+    const kw = r.arms.find(a => a.arm === "keyword")!;
+    assert.equal(mix.credits, -35, "35 👎, no opens/👍 → −35 net credit");
+    assert.ok(mix.credit_rate < 0, `mix credit_rate ${mix.credit_rate} is negative (not clamped)`);
+    assert.equal(mix.credit_rate, -1, "−35 credits / 35 served = −1.0");
+    assert.equal(kw.credits, 35, "keyword opened 35 cards");
+    assert.ok(r.judged >= JUDGED_FLOOR, `downs carry the floor: ${r.judged} judged`);
+    assert.ok(r.diffCI, "CI computed above the floor even with negative credits");
+    // armA=keyword, armB=mix; keyword_rate(1.0) − mix_rate(−1.0) > 0 → whole CI > 0 → LEAN keyword.
+    const [lo, , hi] = r.diffCI!;
+    assert.ok(lo > 0 && hi > 0, `(keyword − mix) CI [${lo}, ${hi}] strictly > 0`);
+    assert.match(r.verdict, /LEAN keyword/);
+  });
+
+  it("a 👎 on an explore serve (arm NULL) never credits, debits, nor counts toward the floor", () => {
+    // The downvote-side mirror of the explore-open exclusion: an arm-NULL serve that gets 👎'd must
+    // leave every arm untouched (VOTE_ARM_SERVE joins only arm-attributed serves).
+    const db = new DatabaseSync(":memory:");
+    db.exec(`
+      CREATE TABLE digest_log (rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+        digest_date TEXT, channel TEXT, tweet_id TEXT, rank INTEGER, lane TEXT, score REAL, parts TEXT, ts TEXT, arm TEXT);
+      CREATE TABLE digest_opens (rowid INTEGER PRIMARY KEY AUTOINCREMENT, tweet_id TEXT, ts TEXT);
+      CREATE TABLE reviews (rowid INTEGER PRIMARY KEY AUTOINCREMENT, tweet_id TEXT, verdict INTEGER, ts TEXT);
+    `);
+    const serve = db.prepare("INSERT INTO digest_log (digest_date,channel,tweet_id,rank,lane,score,parts,ts,arm) VALUES (?,?,?,?,?,1.0,'{}',?,?)");
+    const vote = db.prepare("INSERT INTO reviews (tweet_id, verdict, ts) VALUES (?,?,?)");
+    serve.run("2026-11-01", "web", "A", 1, "taste", "2026-11-01T08:00:00Z", "mix");
+    serve.run("2026-11-01", "web", "B", 2, "taste", "2026-11-01T08:00:00Z", "keyword");
+    serve.run("2026-11-01", "web", "X", 3, "explore", "2026-11-01T08:00:00Z", null); // explore: arm NULL
+    vote.run("X", -1, "2026-11-01T08:10:00Z"); // 👎 on the explore card — must vanish from arm credit
+    const r = interleaveReport(db);
+    const mix = r.arms.find(a => a.arm === "mix")!;
+    const kw = r.arms.find(a => a.arm === "keyword")!;
+    assert.equal(mix.down, 0, "explore 👎 not charged to mix");
+    assert.equal(kw.down, 0, "explore 👎 not charged to keyword");
+    assert.equal(mix.credits, 0, "no debit from the arm-NULL 👎");
+    assert.equal(kw.credits, 0, "no debit from the arm-NULL 👎");
+    assert.equal(r.judged, 0, "an arm-NULL 👎 is never attributed → never counts toward the floor");
   });
 });

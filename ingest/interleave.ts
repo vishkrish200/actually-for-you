@@ -7,6 +7,15 @@
 // are comparison-only signal, and the keyword arm on the product surface is still never a label
 // source (CLAUDE.md invariant).
 //
+// Net credit = opens + 👍 − 👎, and it CAN GO NEGATIVE (never clamped). Doctrine: on this feed the
+// 👎 is the MAJORITY judgment (the owner has cast far more 👎 than 👍) while opens are structurally
+// rare — the digest is read in place, so a drafted card is seldom "opened" (a handful ever). Credit
+// only opens + 👍 and every downvote — most of the judgments there are — carries zero weight: days
+// collapse toward 0–0 ties and the credit-rate CI converges slowly toward a TIED-biased read. A 👎
+// on a drafted card is direct evidence AGAINST the drafting arm, so it debits that arm's credit.
+// (The judged-event FLOOR is unchanged — downs already counted toward it; only the credit formula
+// gains the −👎 term.)
+//
 // Honesty rails, on purpose: (1) it refuses a verdict below a judged-event floor (opens+votes are
 // the only judgments; below the floor the point estimate is noise) — prints the count and the floor,
 // loudly. (2) The lean is a paired seeded-bootstrap CI over DAYS (the independent trials); a CI that
@@ -41,12 +50,13 @@ export interface ArmRow {
   opened: number;   // distinct drafted tweets opened at-or-after first serve
   up: number;       // 👍 attributed to this arm's serves
   down: number;     // 👎 attributed to this arm's serves
-  credits: number;  // opens + 👍 — the interleaving credit (a "this was worth my attention" signal)
-  credit_rate: number; // credits / served (0 when the arm served nothing)
+  credits: number;  // opens + 👍 − 👎 — net interleaving credit; CAN BE NEGATIVE (👎 debits, never clamped)
+  credit_rate: number; // credits / served (0 when the arm served nothing; negative when 👎 outweigh opens+👍)
 }
 
 // Per-arm × per-day credits/serves — the paired unit the bootstrap resamples. One row per
-// (arm, digest_date) the arm was exposed on; credits = that day's opens + 👍 on the arm's serves.
+// (arm, digest_date) the arm was exposed on; credits = that day's opens + 👍 − 👎 on the arm's
+// serves (may be negative — a day the arm drew only downvotes).
 interface ArmDay { arm: string; digest_date: string; served: number; credits: number }
 
 export interface InterleaveReport {
@@ -123,7 +133,7 @@ export function interleaveReport(db: DatabaseSync): InterleaveReport {
   const downByArm = new Map(votes.map(v => [v.arm, Number(v.down ?? 0)]));
   const arms: ArmRow[] = serveOpen.map(r => {
     const up = upByArm.get(r.arm) ?? 0, down = downByArm.get(r.arm) ?? 0;
-    const credits = r.opened + up; // opens + 👍 — the interleaving credit
+    const credits = r.opened + up - down; // opens + 👍 − 👎 — net credit; may be negative, NOT clamped
     return { arm: r.arm, served: r.served, opened: r.opened, up, down, credits, credit_rate: r.served ? credits / r.served : 0 };
   }).sort((a, b) => (a.arm < b.arm ? -1 : 1));
 
@@ -139,10 +149,18 @@ export function interleaveReport(db: DatabaseSync): InterleaveReport {
     WITH vs AS (${VOTE_ARM_SERVE})
     SELECT arm, digest_date, SUM(verdict = 1) AS up FROM vs GROUP BY arm, digest_date`)
     .all() as { arm: string; digest_date: string; up: number | null }[];
+  // Per-(arm,day) 👎 — mirrors dayUp exactly (same VOTE_ARM_SERVE join, same digest_date keying), so
+  // a downvote debits the same day it credits an up. Net per-day credit = opens + 👍 − 👎; may be < 0.
+  const dayDown = db.prepare(`
+    WITH vs AS (${VOTE_ARM_SERVE})
+    SELECT arm, digest_date, SUM(verdict = -1) AS down FROM vs GROUP BY arm, digest_date`)
+    .all() as { arm: string; digest_date: string; down: number | null }[];
   const upByArmDay = new Map(dayUp.map(d => [`${d.arm} ${d.digest_date}`, Number(d.up ?? 0)]));
+  const downByArmDay = new Map(dayDown.map(d => [`${d.arm} ${d.digest_date}`, Number(d.down ?? 0)]));
   const armDays: ArmDay[] = dayServeOpen.map(d => {
     const up = upByArmDay.get(`${d.arm} ${d.digest_date}`) ?? 0;
-    return { arm: d.arm, digest_date: d.digest_date, served: d.served, credits: d.opened + up };
+    const down = downByArmDay.get(`${d.arm} ${d.digest_date}`) ?? 0;
+    return { arm: d.arm, digest_date: d.digest_date, served: d.served, credits: d.opened + up - down };
   });
 
   // Which two arms are actually in the data (interleaving is a 2-arm design). Sorted so armA/armB
@@ -151,8 +169,10 @@ export function interleaveReport(db: DatabaseSync): InterleaveReport {
   const matchup: [string, string] | null = presentArms.length === 2 ? [presentArms[0], presentArms[1]] : null;
 
   // Day-level wins: per digest_date, the arm with more credits wins the day; equal credits (incl.
-  // 0–0) is a tie, neither wins. A robust, position-bias-free summary that doesn't assume the
-  // credit-rate is normal — complements the bootstrap CI below.
+  // 0–0) is a tie, neither wins. Unchanged rule — but with 👎 in the credit now, a day decided only
+  // by downvotes (one arm drew a 👎 → −1, the other did nothing → 0, so 0 > −1) RESOLVES instead of
+  // tying 0–0. A robust, position-bias-free summary that doesn't assume the credit-rate is normal —
+  // complements the bootstrap CI below.
   const winByArm = new Map<string, number>();
   let tiedDays = 0;
   if (matchup) {
@@ -218,7 +238,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   }
   console.log(`\ninterleave — ${totalServed} arm-attributed serves, ${r.judged} judged events (opens + votes)` +
     (r.matchup ? `, matchup ${r.matchup[0]} vs ${r.matchup[1]}` : "") + "\n");
-  console.log("per-arm credits (credits = opens + 👍, credit_rate = credits / served):");
+  console.log("per-arm credits (credits = opens + 👍 − 👎, credit_rate = credits / served; may be negative):");
   console.table(r.arms);
   console.log(`day-level wins (more credits that day; ${r.tiedDays} tied day(s)):`);
   console.table(r.dayWins);

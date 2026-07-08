@@ -1,23 +1,36 @@
-// M6 — Offline replay eval = the ship gate (PRD §9), M12-rethought into a GUARDRAIL: the online
-// interleave (interleave.ts) is the verdict-maker; this gate answers "does any candidate arm beat
-// the keyword baseline on the hand-signed review pool" — beating random/recency/char_len is
-// necessary but not sufficient. A candidate clears only if it beats keyword point-wise on NDCG@10
-// AND MAP *and* its paired-bootstrap (arm − keyword) MAP CI excludes 0 — a CI straddling 0 means
-// TIED, not a win. Every review-pool arm gets that diff CI, not just v1 (the M9 review's deferred
-// requirement). If everything loses, that's a real result; we print it, we don't ship.
+// M6 — Offline replay eval = the ship gate (PRD §9), a GUARDRAIL: the online interleave
+// (interleave.ts) is the verdict-maker; this gate answers "does any candidate arm beat the keyword
+// baseline on the hand-signed review pool" — beating random/recency/char_len is necessary but not
+// sufficient.
 //
-// Note on v0: the existing behavioral ranker (ranker.ts) scores dwell/opened/liked — the
-// held-out candidates here are text-only harvested likes with no impressions, so v0 scores them
-// all ~0. It is NOT a meaningful comparator on this surface; the content baselines below are.
+// WHY AUC, not pooled MAP (rebuilt 2026-07-08): the old gate ranked ONE 50/50-balanced pool by MAP.
+// Three faults, all fixed here:
+//   (1) balancing DISCARDS ~20% of the hand-signed gold (it downsamples the majority class) — the
+//       scarcest, most expensive labels we own, thrown away just to make one list.
+//   (2) MAP is top-heavy — it scores the head of a single ranking, not the decision the ranker is
+//       actually asked to make on this surface.
+//   (3) it silently credits arbitrary tiebreaks: keyword's integer scores TIE on ~28% of 👍/👎
+//       pairs, and MAP's stable-sort tiebreak (on tweet_id) hands those pairs to whoever sorts
+//       first — noise dressed as signal.
+// Pairwise preference accuracy — AUC = P[score(👍) > score(👎)] + ½·P[tie] — fixes all three: it
+// uses EVERY hand label (no balancing; AUC is prevalence-invariant), it IS the ranker's job (order a
+// liked tweet above a disliked one), and ties enter as an explicit ½, never a lucky sort. Measured
+// this way rubric (~0.705) beats keyword (~0.626) with a paired diff CI excluding 0 — the pooled-MAP
+// "tie" was the instrument, not the arms. The gate stays a guardrail; the interleave stays the
+// verdict-maker (doctrine unchanged — do NOT tune weights/hyperparameters against this).
+//
+// eval.ts no longer TRAINS anything: reviews are 100% test by doctrine (no arm trains on gold), so
+// there is nothing to hold out — every hand label feeds the gate. The v1 LR arms and the same-era /
+// full supplementary pools were LR-era scaffolding (era-confounded / keyword-circular) and are gone.
 import type { LabeledRow } from "./labels.ts";
 import { buildLabels, AI_LEXICON } from "./labels.ts";
-import { train, predict, hashStr, type Model } from "./ranker_v1.ts";
-import { loadRubricScores, type RubricScores } from "./rubric.ts";
+import { loadRubricScores, loadRubricScoresBySha, type RubricScores, type ShaScores } from "./rubric.ts";
 import { scoreText, mixFinal, type TasteModel } from "./digest.ts";
 
 export { loadRubricScores, type RubricScores }; // re-export: pre-M9 home of these was eval.ts
 
-// ---- metrics ----
+// ---- probe metrics (probe.ts imports ndcgAt/averagePrecision from here) ----
+// This gate no longer uses NDCG/MAP, but the behavioral probe (probe.ts) does, so the exports stay.
 // rels: relevance of each item in RANKED order (1 = positive, 0 = negative).
 export function ndcgAt(rels: number[], k: number): number {
   const dcg = (xs: number[]) =>
@@ -36,31 +49,18 @@ export function averagePrecision(rels: number[]): number {
   return hits === 0 ? 0 : sum / hits;
 }
 
-// Rank the test pool by `score` desc (stable tiebreak on tweet_id), return relevance sequence.
-function ranked(test: LabeledRow[], score: (r: LabeledRow) => number): number[] {
-  return [...test]
-    .map(r => ({ label: r.label, s: score(r), id: r.tweet_id }))
-    .sort((a, b) => b.s - a.s || (a.id < b.id ? -1 : 1))
-    .map(x => x.label);
-}
-
-function metrics(test: LabeledRow[], score: (r: LabeledRow) => number) {
-  const rels = ranked(test, score);
-  return { ndcg10: ndcgAt(rels, 10), ndcg50: ndcgAt(rels, 50), map: averagePrecision(rels) };
-}
-
-// ---- baselines (content, like-for-like with v1) ----
+// ---- arm scorers ----
 const lexiconScore = (r: LabeledRow) => {
   const text = r.text.toLowerCase();
   return AI_LEXICON.reduce((n, kw) => n + (text.includes(kw) ? 1 : 0), 0);
 };
 const recencyScore = (r: LabeledRow) => Date.parse(r.created_at) || 0;
-const charLenScore = (r: LabeledRow) => r.char_len;             // confound check: v1 must beat this
+const charLenScore = (r: LabeledRow) => r.char_len;             // confound check: a real arm must beat this
 
-// LABEL-INDEPENDENT random baseline. NOT hashStr(tweet_id): tweet_id is a time-ordered snowflake,
-// and positives (older harvested likes) vs easy-negs (recent timeline) live in different id ranges,
-// so any function of the id correlates with the label and fakes a perfect "random" score. Instead
-// assign a seeded-PRNG value per row in array order — the PRNG never sees the label.
+// LABEL-INDEPENDENT random baseline. NOT hashStr(tweet_id): tweet_id is a time-ordered snowflake and
+// positives (older harvested likes) vs negs live in different id ranges, so any function of the id
+// correlates with the label and fakes a perfect "random" score. Instead assign a seeded-PRNG value
+// per row in array order — the PRNG never sees the label, so its AUC is ≈0.5 by construction.
 function randomScorer(rows: LabeledRow[]): (r: LabeledRow) => number {
   let s = 0x9e3779b9;
   const m = new Map<string, number>();
@@ -68,225 +68,296 @@ function randomScorer(rows: LabeledRow[]): (r: LabeledRow) => number {
   return (r) => m.get(r.tweet_id) ?? 0;
 }
 
-// Time-based split, stratified BY KIND (pos / hard_neg / easy_neg) so each appears in train and
-// test. Stratifying by label would be wrong: hard_neg and easy_neg share label 0 but live in
-// different eras (hard_neg = old harvested prunes, easy_neg = recent timeline), so a newest-30%
-// label-0 slice would be ALL easy_neg and starve the same-era pool of negatives. Within each
-// kind: oldest `frac` → train, newest → test.
-//
-// REVIEW KINDS GO 100% TO TEST (M12 rethink). The time-split existed to stop the LR memorizing its
-// own test rows — but no arm trains on reviews anymore (v1 is behavioral-only below; taste/author
-// already exclude reviewed tweets via the M9 leak guard; keyword is fixed; rubric is an LLM), so
-// spending the oldest 70% of hand-signed gold on a dead trainee just starved the gate (balanced
-// n=88 while 387 reviews existed). Every review is test; the gate gets its full resolution.
-export function splitByTime(rows: LabeledRow[], frac = 0.7): { train: LabeledRow[]; test: LabeledRow[] } {
-  const train: LabeledRow[] = [], test: LabeledRow[] = [];
-  for (const kind of ["pos", "hard_neg", "easy_neg", "review_pos", "review_neg"] as const) {
-    const cls = rows.filter(r => r.kind === kind)
-      .sort((a, b) => (Date.parse(a.created_at) || 0) - (Date.parse(b.created_at) || 0));
-    const cut = kind.startsWith("review") ? 0 : Math.floor(cls.length * frac);
-    train.push(...cls.slice(0, cut));
-    test.push(...cls.slice(cut));
-  }
-  return { train, test };
-}
-
-export interface PoolResult {
-  pool: string;
-  n: number; // balanced test-pool size (both classes) — small n = noisy gate, warn on it
-  rows: {
-    name: string; ndcg10: number; ndcg50: number; map: number; mapCI?: [number, number];
-    diffVsKw?: [lo: number, hi: number]; // paired bootstrap on (arm − keyword) MAP — every arm, not just v1
-  }[];
-  ships: boolean;      // some CANDIDATE arm beats keyword: NDCG@10 AND MAP point-wise, AND (when CI ran) diff CI > 0
-  champion?: string;   // the candidate that cleared it (highest MAP among clearers)
-}
-
-// Baselines never ship — they exist to be beaten. Everything else in a pool is a candidate.
-const BASELINES = new Set(["random", "recency", "char_len"]);
-const isCandidate = (name: string) => !BASELINES.has(name) && !name.startsWith("keyword");
-
-// Paired bootstrap (ported from the closed M6 embedding experiment): resample the test rows with
-// replacement B times and recompute every scorer's MAP on the SAME resample, so the per-model CIs
-// and the (v1 − keyword) diff CI share sampling noise. Seeded PRNG, no Math.random — the gate must
-// be reproducible run-to-run.
-function bootstrapMaps(test: LabeledRow[], named: [string, (r: LabeledRow) => number][], B = 2000): number[][] {
-  let s = 0x243f6a88;
-  const rand = () => { s = (s + 0x6d2b79f5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
-  const scored = named.map(([, sc]) => test.map(r => ({ l: r.label, sc: sc(r), id: r.tweet_id })));
-  const maps: number[][] = named.map(() => []);
-  for (let b = 0; b < B; b++) {
-    const pick = Array.from({ length: test.length }, () => Math.floor(rand() * test.length));
-    scored.forEach((rows, i) => {
-      const rels = pick.map(j => rows[j]).sort((a, b2) => b2.sc - a.sc || (a.id < b2.id ? -1 : 1)).map(x => x.l);
-      maps[i].push(averagePrecision(rels));
-    });
-  }
-  return maps;
-}
-const pctile = (xs: number[], p: number) => [...xs].sort((a, b) => a - b)[Math.floor(p * (xs.length - 1))];
-
-export interface EvalResult {
-  reviewOnly: PoolResult; // review_pos vs review_neg — hand-signed, NON-CIRCULAR — THE real ship gate
-  // M12: votes attributed to ✧ explore-lane serves ONLY. The main review pool is serve-selected —
-  // most votes land on cards the mix ranked up, so 👎s concentrate in the serving arm's own
-  // high-score region and the pool drifts toward "the mix's audit log". Explore cards are
-  // day-hash-sampled (no ranker chose them), so this subset is the serve-bias-free read. Small
-  // for now; it grows exactly as fast as ✧ cards get voted. Diagnostic, not yet the gate.
-  reviewAudit: PoolResult;
-  sameEra: PoolResult;    // pos vs hard_neg — era-matched but keyword-curated (near-circular baseline)
-  full: PoolResult;       // pos vs all negs — era-confounded, supplementary
-  rubricCoverage?: RubricCoverage; // M8: how much of the review pool the LLM has actually scored
-}
-
-// M8 rubric arm. Scores are read from the db (rubric_scores, via rubric.ts) for the LATEST
-// rubric_sha present, and passed in as a tweet_id→score map. A verdict is only as trustworthy as
-// its coverage, so we carry the coverage numbers alongside and print them next to the arm — a
-// rubric line at 3/44 coverage is visibly weak by construction, not silently mistaken for a result.
-export interface RubricCoverage { scored: number; total: number; sha: string | null }
-
-// M9 mix arm inputs — built from the db by the caller (runEval itself stays db-free). The taste
-// model comes from digest.buildTaste (reviewed tweets excluded from the profile — the leak guard),
-// the prior from digest.buildAuthorPrior (engagement_labels ONLY, never reviews).
-export interface MixInputs { taste: TasteModel; authorPrior: Map<string, number> }
-
 // The rubric scorer as a LabeledRow scorer: an unscored tweet gets -1 so it sorts BELOW every real
-// 0–10 score, deterministically (the ranked()/bootstrap tiebreak on tweet_id keeps ties stable).
-// This is the "missing scores rank last, deterministically" contract from the plan.
+// 0–10 score, deterministically. This is the "missing scores rank last, deterministically" contract
+// from the plan — the PURE-rubric arm only. (The mix arm treats a missing rubric as z=0 pool-neutral
+// INSIDE mixFinal, never -1 — the unchanged M9 contract.)
 function rubricScorer(rs: RubricScores): (r: LabeledRow) => number {
   return (r) => rs.scores.get(r.tweet_id) ?? -1;
 }
 
-function evalPool(
-  pool: string, test: LabeledRow[], v1: Model, v1NoAuthor: Model,
-  withCI = false, extra: [string, (r: LabeledRow) => number][] = [],
-): PoolResult {
+// ---- AUC: pairwise preference accuracy over the hand-signed pool ----
+// (wins + ½·ties) / (nPos·nNeg) over ALL pos×neg pairs — the fraction of 👍/👎 pairs the scorer
+// orders correctly, ties counted as half a win. This IS the Mann–Whitney statistic; computed by the
+// definition (double loop) because it is dead-obvious to verify and the pool is small (nPos·nNeg is
+// ~50k on the live db — one pass is near-instant). An empty side has no pairs → 0.5 (neutral: there
+// is no gate to read, and 0.5 keeps it from spuriously "beating" anything downstream).
+export function auc(pos: LabeledRow[], neg: LabeledRow[], score: (r: LabeledRow) => number): number {
+  const ps = pos.map(score), ns = neg.map(score);
+  const denom = ps.length * ns.length;
+  if (denom === 0) return 0.5;
+  let wins = 0, ties = 0;
+  for (let a = 0; a < ps.length; a++) {
+    const p = ps[a];
+    for (let b = 0; b < ns.length; b++) {
+      if (p > ns[b]) wins++;
+      else if (p === ns[b]) ties++;
+    }
+  }
+  return (wins + 0.5 * ties) / denom;
+}
+
+// AUC over the subset of pairs where the KEYWORD baseline ties (lexiconScore(pos) === lexiconScore
+// (neg)) — the pairs keyword is structurally blind on (~28% of the live pool). Advisory: a candidate
+// that scores well HERE is separating exactly where the champion cannot. Returns the restricted AUC
+// AND the pair count (the count is arm-independent — the header prints it once). No tied pairs → NaN
+// (the formatter renders "—"); keyword itself is all-ties here, so its own column is 0.5 by
+// construction — a built-in sanity check.
+export function aucOnKeywordTies(
+  pos: LabeledRow[], neg: LabeledRow[], score: (r: LabeledRow) => number,
+): { auc: number; pairs: number } {
+  const kwP = pos.map(lexiconScore), kwN = neg.map(lexiconScore);
+  const sP = pos.map(score), sN = neg.map(score);
+  let wins = 0, ties = 0, pairs = 0;
+  for (let a = 0; a < pos.length; a++) {
+    for (let b = 0; b < neg.length; b++) {
+      if (kwP[a] !== kwN[b]) continue;
+      pairs++;
+      if (sP[a] > sN[b]) wins++;
+      else if (sP[a] === sN[b]) ties++;
+    }
+  }
+  return { auc: pairs === 0 ? NaN : (wins + 0.5 * ties) / pairs, pairs };
+}
+
+// Baselines never ship — they exist to be beaten. keyword is the baseline-to-beat. Everything else
+// is a CANDIDATE that can clear the gate.
+const BASELINES = new Set(["random", "recency", "char_len"]);
+const isCandidate = (name: string) => !BASELINES.has(name) && !name.startsWith("keyword");
+
+// M8 rubric coverage: how much of the review pool the LLM has actually scored, at the latest sha —
+// a verdict is only as trustworthy as its coverage, so we print it next to the arm.
+export interface RubricCoverage { scored: number; total: number; sha: string | null }
+
+// M9 mix arm inputs — built from the db by the caller (runEval itself stays db-free). The taste
+// model comes from digest.buildTaste (reviewed tweets excluded — the leak guard); the prior from
+// digest.buildAuthorPrior (engagement_labels ONLY, never reviews).
+export interface MixInputs { taste: TasteModel; authorPrior: Map<string, number> }
+
+// M8 rubric arm + M9 mix/taste arms, built per pool. rubric = the pure LLM judge (-1 rank-last
+// sentinel for missing). taste = the pre-M9 shipped ranker (digest cosine) — the status quo the mix
+// must justify itself against, not just keyword. mix = THE digest formula (digest.mixFinal, weights
+// and all), z-scored over the pool being ranked (its own definition, matching buildDigest) then
+// frozen per-row; a missing rubric is z=0 pool-neutral here, never -1. random and mix are
+// pool-dependent, so the arm list is rebuilt for every cut over that cut's own rows.
+function armsFor(
+  pool: LabeledRow[], rubric?: RubricScores, mix?: MixInputs,
+): [string, (r: LabeledRow) => number][] {
   const named: [string, (r: LabeledRow) => number][] = [
-    ["random", randomScorer(test)],
+    ["random", randomScorer(pool)],
     ["recency", recencyScore],
     ["char_len", charLenScore],
     ["keyword (baseline to beat)", lexiconScore],
-    ["v1 LR (no author)", (r) => predict(v1NoAuthor, r)],
-    ["v1 LR (full)", (r) => predict(v1, r)],
-    // extra arms ride ONLY the review pool (rubric / taste / mix — built in runEval). THE M8/M9
-    // question lives here: does anything beat keyword on the honest gate where the LR lost?
-    ...extra,
   ];
-  const rows: PoolResult["rows"] = named.map(([name, s]) => ({ name, ...metrics(test, s) }));
-  const keyword = rows.find(r => r.name.startsWith("keyword"))!;
-  if (withCI && test.length > 0) {
-    const maps = bootstrapMaps(test, named);
-    const kw = named.findIndex(([n]) => n.startsWith("keyword"));
-    rows.forEach((r, i) => {
-      r.mapCI = [pctile(maps[i], 0.025), pctile(maps[i], 0.975)];
-      if (i === kw) return;
-      const diff = maps[i].map((m, b) => m - maps[kw][b]);
-      r.diffVsKw = [pctile(diff, 0.025), pctile(diff, 0.975)];
-    });
+  if (rubric) named.push(["rubric (LLM judge)", rubricScorer(rubric)]);
+  if (mix) {
+    const tasteOf = (r: LabeledRow) => scoreText(r.text, mix.taste);
+    named.push(["taste (digest cosine)", tasteOf]);
+    const finals = mixFinal(pool.map(r => ({
+      taste: tasteOf(r),
+      rubric: rubric?.scores.get(r.tweet_id) ?? null,
+      author: mix.authorPrior.get(r.author_id) ?? 0,
+    })));
+    const byId = new Map(pool.map((r, i) => [r.tweet_id, finals[i].final]));
+    named.push(["mix (M9 digest blend)", (r) => byId.get(r.tweet_id) ?? 0]);
   }
-  // The gate, generalized past v1: ANY candidate arm can clear it, but only honestly — point-wise
-  // better on both metrics AND, when the bootstrap ran, a diff CI that excludes 0 (tied ≠ win).
-  const clearers = rows.filter(r =>
-    isCandidate(r.name) && r.ndcg10 > keyword.ndcg10 && r.map > keyword.map &&
-    (r.diffVsKw ? r.diffVsKw[0] > 0 : true));
-  const champion = clearers.sort((a, b) => b.map - a.map)[0]?.name;
-  return { pool, n: test.length, rows, ships: clearers.length > 0, champion };
+  return named;
 }
 
-// Class-balance a test pool by deterministically downsampling the majority class to the minority
-// count. WHY THIS IS REQUIRED, not cosmetic: the same-era pool is ~86% positive (pos hugely
-// outnumber same-era hard_negs), so NDCG@10/MAP SATURATE — the top-k is nearly all-positive under
-// ANY score, so `random` and `char_len` both hit 1.0 and the gate can't discriminate. A 50/50 pool
-// makes random→~0.5 and lets keyword vs v1 actually separate. Deterministic (hashStr sort, no
-// Math.random) so the gate is reproducible. Throws away majority-class test rows on purpose — a
-// fair-but-smaller gate beats a large meaningless one.
-function balancePool(test: LabeledRow[]): LabeledRow[] {
-  const pos = test.filter(r => r.label === 1);
-  const neg = test.filter(r => r.label === 0);
-  const [maj, min] = pos.length >= neg.length ? [pos, neg] : [neg, pos];
-  const keptMaj = [...maj].sort((a, b) => hashStr(a.tweet_id) - hashStr(b.tweet_id)).slice(0, min.length);
-  return [...keptMaj, ...min];
+export interface PoolResult {
+  pool: string;
+  nPos: number;
+  nNeg: number;
+  pairs: number;       // nPos·nNeg — every hand label participates (no balancing)
+  tiedPairs: number;   // pairs on which keyword ties (the kw-blind subset)
+  rows: {
+    name: string;
+    auc: number;                 // ALL pairs — THE gate metric
+    aucTied: number;             // AUC on the keyword-tied subset (advisory; NaN if no tied pairs)
+    aucCI?: [number, number];    // per-arm 95% bootstrap CI on all-pairs AUC
+    diffVsKw?: [number, number]; // paired (arm − keyword) AUC CI — every arm but keyword
+  }[];
+  ships: boolean;      // a CANDIDATE beats keyword all-pairs AUC AND its diff CI excludes 0 (lo > 0)
+  champion?: string;   // highest-AUC clearer
 }
 
-export function runEval(rows: LabeledRow[], rubric?: RubricScores, mix?: MixInputs): EvalResult {
-  const { train: tr, test } = splitByTime(rows);
-  // v1 trains on BEHAVIORAL labels only (splitByTime routes every review row to test) — it kept
-  // losing the gate (below random at n=88, five readings running), so it no longer earns gold.
-  const v1 = train(tr, { useAuthor: true });
-  const v1NoAuthor = train(tr, { useAuthor: false }); // ablation: author can memorize
+// Floor below which the gate is too thin to trust either way: fewer than REVIEW_MIN_N total hand
+// labels, OR fewer than MIN_PER_CLASS of either sign (a lopsided pool can't estimate the minority
+// side). Below the floor there is NO verdict — not SHIP, not HOLD — just "sign more".
+const REVIEW_MIN_N = 40;
+const MIN_PER_CLASS = 10;
+const belowFloor = (nPos: number, nNeg: number) =>
+  nPos + nNeg < REVIEW_MIN_N || Math.min(nPos, nNeg) < MIN_PER_CLASS;
 
-  // REVIEW-ONLY: hand-signed 👍 vs 👎 — no keyword lexicon touched the labels, so this is the honest
-  // gate. Balanced 50/50 so the metric discriminates. (Thin until you sign more — see the count.)
-  const reviewTest = balancePool(test.filter(r => r.kind === "review_pos" || r.kind === "review_neg"));
-  // SAME-ERA: pos vs topical-prune hard_neg — matched era but the negs were drawn with the AI lexicon,
-  // so the keyword baseline here is near-circular. Kept as a supplementary read, no longer THE gate.
-  const sameEraTest = balancePool(test.filter(r => r.kind === "pos" || r.kind === "hard_neg"));
+const pctile = (xs: number[], p: number) => [...xs].sort((a, b) => a - b)[Math.floor(p * (xs.length - 1))];
 
-  // M8 coverage: fraction of the ACTUAL (balanced) review test pool that carries a rubric score at
-  // the latest sha. This is the number that qualifies the rubric verdict — measured against the same
-  // pool the arm ranks, so it can't over-claim.
+// Paired bootstrap over ITEMS — pos indices and neg indices resampled with replacement — NOT over
+// pairs, which are not independent (each item appears in many pairs). Every arm's AUC is recomputed
+// on the SAME resample, so the per-arm CIs and the (arm − keyword) diff CI share sampling noise.
+// Seeded PRNG (0x243f6a88), no Math.random / Date.now — the gate is reproducible run-to-run.
+function bootstrapAUC(
+  pos: LabeledRow[], neg: LabeledRow[], named: [string, (r: LabeledRow) => number][], B = 2000,
+): { ci: [number, number][]; diff: ([number, number] | null)[] } {
+  const nP = pos.length, nN = neg.length, denom = nP * nN;
+  const posScores = named.map(([, sc]) => pos.map(sc)); // frozen per-row scores (bootstrap resamples these)
+  const negScores = named.map(([, sc]) => neg.map(sc));
+  const kwIdx = named.findIndex(([n]) => n.startsWith("keyword"));
+  let s = 0x243f6a88;
+  const rand = () => { s = (s + 0x6d2b79f5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  const aucs: number[][] = named.map(() => []);
+  const diffs: number[][] = named.map(() => []);
+  const pi = new Int32Array(nP), ni = new Int32Array(nN);
+  const cur = new Array<number>(named.length);
+  for (let b = 0; b < B; b++) {
+    for (let a = 0; a < nP; a++) pi[a] = (rand() * nP) | 0; // resample pos items
+    for (let c = 0; c < nN; c++) ni[c] = (rand() * nN) | 0; // then neg items
+    for (let i = 0; i < named.length; i++) {
+      const P = posScores[i], N = negScores[i];
+      let wins = 0, ties = 0;
+      for (let a = 0; a < nP; a++) {
+        const p = P[pi[a]];
+        for (let c = 0; c < nN; c++) {
+          const n = N[ni[c]];
+          if (p > n) wins++;
+          else if (p === n) ties++;
+        }
+      }
+      cur[i] = (wins + 0.5 * ties) / denom;
+      aucs[i].push(cur[i]);
+    }
+    const kw = cur[kwIdx];
+    for (let i = 0; i < named.length; i++) if (i !== kwIdx) diffs[i].push(cur[i] - kw);
+  }
+  const ci = aucs.map(xs => [pctile(xs, 0.025), pctile(xs, 0.975)] as [number, number]);
+  const diff = named.map((_, i) =>
+    i === kwIdx ? null : [pctile(diffs[i], 0.025), pctile(diffs[i], 0.975)] as [number, number]);
+  return { ci, diff };
+}
+
+// Score one cut (pos vs neg) on every arm: all-pairs AUC, keyword-tied AUC, and — when both classes
+// are present — the paired bootstrap CIs. `ships` is true only when a CANDIDATE beats keyword on
+// all-pairs AUC AND its (arm − keyword) diff CI excludes 0 (lo > 0); below the floor there is no
+// win regardless (a thin pool cannot ship).
+function evalCut(
+  poolName: string, pos: LabeledRow[], neg: LabeledRow[],
+  rubric?: RubricScores, mix?: MixInputs, withCI = true,
+): PoolResult {
+  const pool = [...pos, ...neg];
+  const named = armsFor(pool, rubric, mix);
+  let tiedPairs = 0;
+  const rows: PoolResult["rows"] = named.map(([name, sc], i) => {
+    const tied = aucOnKeywordTies(pos, neg, sc);
+    if (i === 0) tiedPairs = tied.pairs; // arm-independent — grab it once
+    return { name, auc: auc(pos, neg, sc), aucTied: tied.auc };
+  });
+  const keyword = rows.find(r => r.name.startsWith("keyword"))!;
+  if (withCI && pos.length > 0 && neg.length > 0) {
+    const { ci, diff } = bootstrapAUC(pos, neg, named);
+    rows.forEach((r, i) => { r.aucCI = ci[i]; if (diff[i]) r.diffVsKw = diff[i]!; });
+  }
+  const clearers = belowFloor(pos.length, neg.length) ? [] : rows.filter(r =>
+    isCandidate(r.name) && r.auc > keyword.auc && r.diffVsKw && r.diffVsKw[0] > 0);
+  const champion = clearers.sort((a, b) => b.auc - a.auc)[0]?.name;
+  return {
+    pool: poolName, nPos: pos.length, nNeg: neg.length, pairs: pos.length * neg.length,
+    tiedPairs, rows, ships: clearers.length > 0, champion,
+  };
+}
+
+// ---- judge calibration: rubric grade vs hand votes, per RUBRIC.md version ----
+export interface ShaCalibration {
+  sha: string; firstTs: string;
+  scored: number; total: number;      // review-pool coverage under THIS sha
+  meanPos: number; meanNeg: number;   // mean rubric grade on 👍 / 👎 (rows scored under this sha; NaN if none)
+  auc: number;                        // rubric-vs-votes AUC on pairs where BOTH tweets scored (NaN if none)
+  pairs: number;
+}
+
+function calibrationFor(sh: ShaScores, pos: LabeledRow[], neg: LabeledRow[]): ShaCalibration {
+  const has = (r: LabeledRow) => sh.scores.has(r.tweet_id);
+  const val = (r: LabeledRow) => sh.scores.get(r.tweet_id)!;
+  const sp = pos.filter(has), sn = neg.filter(has);
+  const mean = (xs: number[]) => xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : NaN;
+  const pairs = sp.length * sn.length;
+  return {
+    sha: sh.sha, firstTs: sh.firstTs,
+    scored: sp.length + sn.length, total: pos.length + neg.length,
+    meanPos: mean(sp.map(val)), meanNeg: mean(sn.map(val)),
+    // only pairs where BOTH tweets have a score under this sha == sp × sn (all present by construction).
+    auc: pairs === 0 ? NaN : auc(sp, sn, val), pairs,
+  };
+}
+
+export interface EvalResult {
+  reviewOnly: PoolResult;   // ALL hand-signed pairs — THE ship gate
+  // M12: votes attributed to ✧ explore-lane serves ONLY. The main review pool is serve-selected —
+  // most votes land on cards the mix ranked up, so 👎s concentrate in the serving arm's own
+  // high-score region and the pool drifts toward "the mix's audit log". Explore cards are
+  // day-hash-sampled (no ranker chose them), so this subset is the serve-bias-free read. Diagnostic.
+  reviewAudit: PoolResult;
+  rubricCoverage?: RubricCoverage;
+  calibration: ShaCalibration[]; // per RUBRIC.md version, oldest first ([] when no scores passed)
+}
+
+// runEval is db-FREE: the caller reads rubric scores / per-sha scores / mix inputs from the db and
+// passes them in. `shaScores` (loadRubricScoresBySha) drives the judge-calibration table.
+export function runEval(
+  rows: LabeledRow[], rubric?: RubricScores, mix?: MixInputs, shaScores: ShaScores[] = [],
+): EvalResult {
+  const reviewPos = rows.filter(r => r.kind === "review_pos");
+  const reviewNeg = rows.filter(r => r.kind === "review_neg");
+
+  // THE gate: every hand-signed 👍 vs every 👎 — no balancing, no split (reviews are 100% test).
+  const reviewOnly = evalCut(
+    "REVIEW-ONLY (hand-signed 👍 vs 👎) — NON-CIRCULAR SHIP GATE", reviewPos, reviewNeg, rubric, mix);
+
+  // M12 audit: votes attributed to ✧ explore-lane serves ONLY — the serve-bias-free subset (no
+  // ranker chose those cards). Diagnostic; it grows exactly as fast as ✧ cards get voted.
+  const auditPos = reviewPos.filter(r => r.served_lane === "explore");
+  const auditNeg = reviewNeg.filter(r => r.served_lane === "explore");
+  const reviewAudit = evalCut(
+    "REVIEW-EXPLORE (✧-lane votes only) — SERVE-BIAS-FREE AUDIT", auditPos, auditNeg, rubric, mix);
+
+  // M8 coverage on the FULL review pool at the latest sha — the number that qualifies the rubric
+  // verdict (measured against the same rows the arm ranks, so it can't over-claim).
+  const reviewAll = [...reviewPos, ...reviewNeg];
   const rubricCoverage: RubricCoverage | undefined = rubric && {
-    scored: reviewTest.filter(r => rubric.scores.has(r.tweet_id)).length,
-    total: reviewTest.length,
+    scored: reviewAll.filter(r => rubric.scores.has(r.tweet_id)).length,
+    total: reviewAll.length,
     sha: rubric.sha,
   };
 
-  // M12: the serve-bias-free audit pool — review votes whose attributed serve was a ✧ explore card.
-  const auditTest = balancePool(test.filter(r =>
-    (r.kind === "review_pos" || r.kind === "review_neg") && r.served_lane === "explore"));
+  // Judge calibration: for every RUBRIC.md version ever run, how close the LLM's grades came to the
+  // hand votes — mean grade on 👍 / 👎 and the rubric-vs-votes AUC, both on rows scored under THAT
+  // sha only. Ordered oldest→newest so you read down and watch the AUC move (or not) per edit.
+  const calibration = [...shaScores]
+    .sort((a, b) => (a.firstTs < b.firstTs ? -1 : a.firstTs > b.firstTs ? 1 : 0))
+    .map(sh => calibrationFor(sh, reviewPos, reviewNeg));
 
-  // Review-pool-only arms, built per pool. rubric = the pure LLM judge (M8, −1 rank-last sentinel
-  // for missing). taste = the pre-M9 shipped ranker (digest cosine) — the status quo the mix must
-  // justify itself against, not just keyword. mix = THE digest formula (digest.mixFinal, weights
-  // and all): z-scored over the pool being ranked — the mix's own definition, matching buildDigest —
-  // then frozen (the bootstrap resamples frozen per-row scores, same as every other arm); missing
-  // rubric is z=0 pool-neutral here, never −1 (the M9 contract). Per-pool z means the mix row is
-  // comparable WITHIN a pool, not across pools.
-  const armsFor = (pool: LabeledRow[]): [string, (r: LabeledRow) => number][] => {
-    const extra: [string, (r: LabeledRow) => number][] = [];
-    if (rubric) extra.push(["rubric (LLM judge)", rubricScorer(rubric)]);
-    if (mix) {
-      const tasteOf = (r: LabeledRow) => scoreText(r.text, mix.taste);
-      extra.push(["taste (digest cosine)", tasteOf]);
-      const finals = mixFinal(pool.map(r => ({
-        taste: tasteOf(r),
-        rubric: rubric?.scores.get(r.tweet_id) ?? null,
-        author: mix.authorPrior.get(r.author_id) ?? 0,
-      })));
-      const byId = new Map(pool.map((r, i) => [r.tweet_id, finals[i].final]));
-      extra.push(["mix (M9 digest blend)", (r) => byId.get(r.tweet_id) ?? 0]);
-    }
-    return extra;
-  };
-
-  return {
-    // CI only on the review pools — they're the gates that get trusted, and the ones small enough
-    // to need error bars. The supplementary pools are confounded; tighter bars wouldn't make them mean more.
-    // The extra arms ride ONLY on these pools (the honest gates); the supplementary pools stay as-is.
-    reviewOnly: evalPool("REVIEW-ONLY (hand-signed 👍 vs 👎) — NON-CIRCULAR SHIP GATE", reviewTest, v1, v1NoAuthor, true, armsFor(reviewTest)),
-    reviewAudit: evalPool("REVIEW-EXPLORE (✧-lane votes only) — SERVE-BIAS-FREE AUDIT", auditTest, v1, v1NoAuthor, true, armsFor(auditTest)),
-    sameEra: evalPool("SAME-ERA (pos vs topical-prune negs) — keyword-curated, supplementary", sameEraTest, v1, v1NoAuthor),
-    full: evalPool("FULL (pos vs all negs) — era-confounded, supplementary", test, v1, v1NoAuthor),
-    rubricCoverage,
-  };
+  return { reviewOnly, reviewAudit, rubricCoverage, calibration };
 }
+
+// ---- formatting (▼-table aesthetic preserved) ----
+const comma = (n: number) => n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 
 function formatPool(p: PoolResult): string {
-  const hasCI = p.rows.some(r => r.mapCI);
-  const ciHead = hasCI ? `  ${"MAP 95% CI".padEnd(16)}  Δ vs keyword` : "";
-  const head = `${"model".padEnd(28)} ${"NDCG@10".padStart(8)} ${"NDCG@50".padStart(8)} ${"MAP".padStart(8)}${ciHead}`;
   const sgn = (x: number) => `${x >= 0 ? "+" : ""}${x.toFixed(3)}`;
-  const body = p.rows.map(r =>
-    `${r.name.padEnd(28)} ${r.ndcg10.toFixed(4).padStart(8)} ${r.ndcg50.toFixed(4).padStart(8)} ${r.map.toFixed(4).padStart(8)}` +
-    (r.mapCI ? `  ${`[${r.mapCI[0].toFixed(3)}, ${r.mapCI[1].toFixed(3)}]`.padEnd(16)}` : "") +
-    // per-arm paired diff CI vs keyword: * marks a CI that excludes 0 (a real gap, either direction)
-    (r.diffVsKw ? `  [${sgn(r.diffVsKw[0])}, ${sgn(r.diffVsKw[1])}]${r.diffVsKw[0] > 0 || r.diffVsKw[1] < 0 ? " *" : ""}` : ""),
-  );
-  return [`▼ ${p.pool}  (balanced test n=${p.n})`, head, ...body].join("\n");
+  const ci = (c?: [number, number]) => c ? `[${c[0].toFixed(3)}, ${c[1].toFixed(3)}]` : "";
+  const share = p.pairs ? ` (${Math.round((100 * p.tiedPairs) / p.pairs)}% of pairs)` : "";
+  const head =
+    `${"model".padEnd(28)} ${"AUC".padStart(7)}  ${"AUC 95% CI".padEnd(18)} ${"Δ vs keyword CI".padEnd(20)} ${"AUC(kw-tied)".padStart(12)}`;
+  const body = p.rows.map(r => {
+    const diff = r.diffVsKw
+      ? `[${sgn(r.diffVsKw[0])}, ${sgn(r.diffVsKw[1])}]${r.diffVsKw[0] > 0 || r.diffVsKw[1] < 0 ? " *" : ""}`
+      : "";
+    const tied = Number.isNaN(r.aucTied) ? "—" : r.aucTied.toFixed(4);
+    return `${r.name.padEnd(28)} ${r.auc.toFixed(4).padStart(7)}  ${ci(r.aucCI).padEnd(18)} ${diff.padEnd(20)} ${tied.padStart(12)}`;
+  });
+  return [
+    `▼ ${p.pool}  (${p.nPos} 👍 × ${p.nNeg} 👎 = ${comma(p.pairs)} pairs; ${comma(p.tiedPairs)} keyword-tied${share})`,
+    head, ...body,
+  ].join("\n");
 }
-
-// n below which the review gate is too thin to trust either way — sign more before believing it.
-const REVIEW_MIN_N = 40;
 
 // M8 coverage line. The rubric arm ranks the review pool, but its verdict means nothing at low
 // coverage (an unscored tweet is dumped to the bottom via -1, so a mostly-unscored pool "ranks" on
@@ -295,46 +366,63 @@ const REVIEW_MIN_N = 40;
 function formatRubricCoverage(cov?: RubricCoverage): string {
   if (!cov) return "";
   const shaShort = cov.sha ? `${cov.sha.slice(0, 6)}…` : "none";
-  const pct = cov.total ? Math.round((100 * cov.scored) / cov.total) : 0;
   const weak = cov.total === 0 || cov.scored < cov.total / 2
     ? `  ⚠ LOW COVERAGE — the rubric verdict above is weak; run \`npm run rubric\` to score the pool.`
     : "";
   return `rubric coverage: ${cov.scored}/${cov.total} review-pool tweets scored (sha ${shaShort})${weak}`;
 }
 
-// Default output is the review pool + verdict ONLY — the supplementary pools were LR-era scaffolding
-// (era-confounded / keyword-circular) and mostly added noise to the read. `--all` still prints them.
-export function formatEval(res: EvalResult, { all = false } = {}): string {
+function formatCalibration(cal: ShaCalibration[]): string {
+  if (cal.length === 0) return "";
+  const num = (x: number, d = 2) => Number.isNaN(x) ? "—" : x.toFixed(d);
+  const head =
+    `${"sha".padEnd(10)} ${"coverage".padStart(9)}  ${"mean👍".padStart(6)} ${"mean👎".padStart(6)}  ${"rubric-vs-votes AUC".padStart(19)}`;
+  const body = cal.map(c =>
+    `${c.sha.slice(0, 8).padEnd(10)} ${`${c.scored}/${c.total}`.padStart(9)}  ${num(c.meanPos).padStart(6)} ${num(c.meanNeg).padStart(6)}  ${num(c.auc, 4).padStart(19)}`);
+  return [
+    `▼ JUDGE CALIBRATION — did the LLM grade move toward your votes? (per RUBRIC.md version, oldest first)`,
+    head, ...body,
+    `⚠ do NOT iterate RUBRIC.md against this table — a rubric edit must come from lived digest ` +
+      `experience, not from chasing this AUC (that would be tuning against the gate).`,
+  ].join("\n");
+}
+
+// Default output is the review gate + judge calibration + audit pool + verdict. No supplementary
+// pools, no `--all` flag — those were LR-era confounded reads that only added noise.
+export function formatEval(res: EvalResult): string {
   const r = res.reviewOnly;
-  const gate = r.n < REVIEW_MIN_N
-    ? `⏳ INCONCLUSIVE — only ${r.n} hand-signed test labels (need ~${REVIEW_MIN_N}+). Sign more 👍/👎 in the ` +
-      `reading client, then re-run. The keyword gate below is near-circular, so this is the one that counts.`
+  const total = r.nPos + r.nNeg;
+  const gate = belowFloor(r.nPos, r.nNeg)
+    ? `⏳ INCONCLUSIVE — only ${total} hand-signed labels (${r.nPos} 👍 / ${r.nNeg} 👎; need ${REVIEW_MIN_N}+ total ` +
+      `AND ≥${MIN_PER_CLASS} of each sign). Sign more 👍/👎 in the reading client, then re-run — this is the gate that counts.`
     : r.ships
-      ? `SHIP ✅  ${r.champion} beats keyword on the NON-CIRCULAR review gate (NDCG@10 AND MAP, diff CI excludes 0) at n=${r.n}.`
-      : `HOLD ⛔  no candidate beats keyword on the review gate at n=${r.n} — keyword stays the champion.`;
+      ? `SHIP ✅  ${r.champion} beats keyword on the NON-CIRCULAR review gate (all-pairs AUC AND a diff CI excluding 0) at ${r.nPos} 👍 / ${r.nNeg} 👎.`
+      : `HOLD ⛔  no candidate beats keyword on the review gate at ${r.nPos} 👍 / ${r.nNeg} 👎 — keyword stays the champion.`;
   // Summarize the strongest candidate's diff CI (the table has every arm's) — tied vs real gap.
-  const best = [...r.rows].filter(x => isCandidate(x.name) && x.diffVsKw).sort((a, b) => b.map - a.map)[0];
+  const best = [...r.rows].filter(x => isCandidate(x.name) && x.diffVsKw).sort((a, b) => b.auc - a.auc)[0];
   const ciNote = best?.diffVsKw
     ? best.diffVsKw[0] < 0 && best.diffVsKw[1] > 0
-      ? `\n   best candidate (${best.name}): (arm − keyword) MAP CI [${best.diffVsKw[0].toFixed(3)}, ${best.diffVsKw[1].toFixed(3)}] straddles 0 → statistically TIED at n=${r.n}.`
-      : `\n   best candidate (${best.name}): (arm − keyword) MAP CI [${best.diffVsKw[0].toFixed(3)}, ${best.diffVsKw[1].toFixed(3)}] excludes 0 → the gap is real at n=${r.n}, not sampling noise.`
+      ? `\n   best candidate (${best.name}): (arm − keyword) AUC CI [${best.diffVsKw[0].toFixed(3)}, ${best.diffVsKw[1].toFixed(3)}] straddles 0 → statistically TIED at n=${total}.`
+      : `\n   best candidate (${best.name}): (arm − keyword) AUC CI [${best.diffVsKw[0].toFixed(3)}, ${best.diffVsKw[1].toFixed(3)}] excludes 0 → the gap is real at n=${total}, not sampling noise.`
     : "";
   const coverage = formatRubricCoverage(res.rubricCoverage);
-  // M12 audit pool: print it always (movement is visible early), but refuse to let a thin n read
-  // as a verdict — same doctrine as the interleave's judged-event floor.
-  const audit = res.reviewAudit;
-  const auditNote = audit.n < REVIEW_MIN_N
-    ? `⏳ audit pool too thin to trust (n=${audit.n} < ${REVIEW_MIN_N}) — keep voting ✧ explore cards; this is the serve-bias-free gate growing.`
-    : `audit pool at n=${audit.n} — large enough to read; where it disagrees with REVIEW-ONLY above, trust the audit (no serve bias).`;
-  const supplementary = all
-    ? [formatPool(res.sameEra), "", formatPool(res.full), ""]
-    : ["(supplementary same-era/full pools hidden — `npm run eval -- --all` to print them)", ""];
+  const calibration = formatCalibration(res.calibration);
+
+  // M12 audit pool: print the table only when it has both classes (an all-0.5 degenerate table is
+  // noise), but ALWAYS print the note — refuse to let a thin n read as a verdict, same doctrine as
+  // the interleave's judged-event floor.
+  const a = res.reviewAudit;
+  const auditNote = belowFloor(a.nPos, a.nNeg)
+    ? `⏳ audit pool too thin to trust (${a.nPos} 👍 / ${a.nNeg} 👎, below floor) — keep voting ✧ explore cards; this is the serve-bias-free gate growing.`
+    : `audit pool at ${a.nPos} 👍 / ${a.nNeg} 👎 — large enough to read; where it disagrees with REVIEW-ONLY above, trust the audit (no serve bias).`;
+
   return [
     formatPool(res.reviewOnly),
-    ...(coverage ? [coverage] : []), "",
-    ...(audit.n > 0 ? [formatPool(audit)] : []), // an empty pool's all-zero table is noise; the note suffices
+    ...(coverage ? [coverage] : []),
+    ...(calibration ? ["", calibration] : []),
+    "",
+    ...(a.pairs > 0 ? [formatPool(a), ""] : []),
     auditNote, "",
-    ...supplementary,
     gate + ciNote,
   ].join("\n");
 }
@@ -343,11 +431,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const { DatabaseSync } = await import("node:sqlite");
   const { buildTaste, buildAuthorPrior } = await import("./digest.ts");
   const db = new DatabaseSync(process.env.AFY_DB ?? "afy.db");
-  // loadRubricScores tolerates a missing rubric_scores table (returns empty) so eval stays strictly
-  // read-only — it never creates the table. The scorer (rubric.ts) and server own the CREATE.
+  // eval stays strictly read-only: loadRubricScores / loadRubricScoresBySha tolerate a missing
+  // rubric_scores table (return empty) and NEVER create it — the scorer/server own the CREATE.
   // MixInputs mirror exactly what buildDigest ships: same taste profile, same author prior.
   console.log(formatEval(runEval(
     buildLabels(db), loadRubricScores(db),
     { taste: buildTaste(db), authorPrior: buildAuthorPrior(db) },
-  ), { all: process.argv.includes("--all") }));
+    loadRubricScoresBySha(db),
+  )));
 }

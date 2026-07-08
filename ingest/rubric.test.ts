@@ -197,8 +197,8 @@ describe("eval rubric arm", () => {
   // low on negatives) → the rubric arm must land at the TOP of the pool, and coverage must be exact.
   function seedReviewPool(): DatabaseSync {
     const db = seed();
-    // balancePool downsamples to 50/50 and splitByTime holds out the newest 30% per kind, so seed a
-    // generous, date-spread pool so the balanced TEST pool clears REVIEW_MIN_N and both classes appear.
+    // The AUC gate uses every hand label (no balancing, no split), so 40 👍 + 40 👎 = 80 rows all
+    // feed the pool — comfortably past REVIEW_MIN_N with both classes well represented.
     for (let i = 0; i < 40; i++) {
       const d = `2026-0${1 + (i % 6)}-01`;
       const pos = `rp${i}`, neg = `rn${i}`;
@@ -225,17 +225,17 @@ describe("eval rubric arm", () => {
     const arm = res.reviewOnly.rows.find(r => r.name.startsWith("rubric"));
     assert.ok(arm, "rubric arm present in the review pool");
     const kw = res.reviewOnly.rows.find(r => r.name.startsWith("keyword"))!;
-    // perfect separation → rubric MAP is a perfect 1.0 and at least matches the keyword baseline.
-    assert.equal(arm!.map, 1, `rubric MAP should be perfect on cleanly-separated scores, got ${arm!.map}`);
-    assert.ok(arm!.map >= kw.map, "rubric at least ties keyword on this fixture");
+    // perfect separation → rubric AUC is a perfect 1.0 and at least matches the keyword baseline.
+    assert.equal(arm!.auc, 1, `rubric AUC should be perfect on cleanly-separated scores, got ${arm!.auc}`);
+    assert.ok(arm!.auc >= kw.auc, "rubric at least ties keyword on this fixture");
     // M12 rethink: every non-keyword review-pool arm carries a paired (arm − keyword) diff CI.
     assert.ok(arm!.diffVsKw, "rubric arm has a diff CI vs keyword");
     assert.ok(!kw.diffVsKw, "keyword carries no diff against itself");
 
-    // coverage: the balanced test pool is fully scored here → scored === total, sha matches.
+    // coverage: the full review pool is fully scored here → scored === total, sha matches.
     assert.ok(res.rubricCoverage, "coverage computed");
     assert.equal(res.rubricCoverage!.scored, res.rubricCoverage!.total, "full coverage on a fully-scored pool");
-    assert.equal(res.rubricCoverage!.total, res.reviewOnly.n, "coverage total == balanced review pool n");
+    assert.equal(res.rubricCoverage!.total, res.reviewOnly.nPos + res.reviewOnly.nNeg, "coverage total == full review pool size");
     assert.equal(res.rubricCoverage!.sha, sha);
   });
 
@@ -253,9 +253,9 @@ describe("eval rubric arm", () => {
     assert.ok(res.rubricCoverage!.scored < res.rubricCoverage!.total, "partial coverage reflected");
     assert.ok(res.rubricCoverage!.scored > 0, "the scored negatives are counted");
     const arm = res.reviewOnly.rows.find(r => r.name.startsWith("rubric"))!;
-    // negatives scored high + positives at -1 → an actively WRONG ranking → MAP below a coin flip.
+    // negatives scored high + positives at -1 → an actively WRONG ranking → AUC below a coin flip.
     const rnd = res.reviewOnly.rows.find(r => r.name === "random")!;
-    assert.ok(arm.map <= rnd.map + 1e-9, `mis-scored pool should not beat random, got rubric ${arm.map} vs random ${rnd.map}`);
+    assert.ok(arm.auc <= rnd.auc + 1e-9, `mis-scored pool should not beat random, got rubric ${arm.auc} vs random ${rnd.auc}`);
   });
 
   it("M12 provenance: served_lane follows the VOTE_SERVE convention; audit pool = explore votes only", () => {
@@ -284,10 +284,11 @@ describe("eval rubric arm", () => {
   it("no rubric scores at all → no arm, no coverage (eval still runs)", () => {
     const db = seedReviewPool();
     const res = runEval(buildLabels(db), loadRubricScores(db)); // rubric_scores empty
-    assert.equal(res.rubricCoverage!.total, res.reviewOnly.n);
+    assert.equal(res.rubricCoverage!.total, res.reviewOnly.nPos + res.reviewOnly.nNeg);
     assert.equal(res.rubricCoverage!.scored, 0, "nothing scored yet");
     // arm IS present (rubric passed) but scores everything -1 → ties; the point is eval doesn't crash.
-    assert.ok(res.reviewOnly.rows.length >= 6, "baseline arms all still present");
+    // 3 baselines (random/recency/char_len) + keyword + rubric = 5 arms (no mix passed here).
+    assert.ok(res.reviewOnly.rows.length >= 5, "baseline arms all still present");
   });
 
   it("M9: taste + mix arms ride the review pool only, side by side with keyword/v1/rubric", () => {
@@ -302,20 +303,14 @@ describe("eval rubric arm", () => {
 
     const names = res.reviewOnly.rows.map(r => r.name);
     assert.ok(names.some(n => n.startsWith("keyword")), "keyword present");
-    assert.ok(names.includes("v1 LR (full)"), "v1 present");
     assert.ok(names.some(n => n.startsWith("rubric")), "rubric present");
     assert.ok(names.includes("taste (digest cosine)"), "taste arm present");
     assert.ok(names.includes("mix (M9 digest blend)"), "mix arm present");
-    // the M9 arms are review-pool-only — the supplementary pools stay untouched
-    for (const pool of [res.sameEra, res.full]) {
-      assert.ok(!pool.rows.some(r => r.name.startsWith("mix") || r.name.startsWith("taste (")),
-        `no M9 arms in ${pool.pool}`);
-    }
     // this fixture has NO likes → taste cosine and author prior are all-zero → the mix reduces to
     // 0.3·z(rubric), and the fully-scored, cleanly-separated pool must rank perfectly. This also
     // pins missing-score handling implicitly: any −1 sentinel leaking into the mix would be a bug
     // caught by the digest snapshot test; here every row is scored.
     const mixRow = res.reviewOnly.rows.find(r => r.name === "mix (M9 digest blend)")!;
-    assert.equal(mixRow.map, 1, `mix MAP should be perfect on this fixture, got ${mixRow.map}`);
+    assert.equal(mixRow.auc, 1, `mix AUC should be perfect on this fixture, got ${mixRow.auc}`);
   });
 });

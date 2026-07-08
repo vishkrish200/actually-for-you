@@ -266,6 +266,34 @@ export function loadRubricScores(db: DatabaseSync): RubricScores {
   return { sha, scores };
 }
 
+// ---- per-sha score reader (eval.ts's judge-calibration table) ----
+// EVERY rubric version ever run, each with the first time it appeared (firstTs) and its LATEST score
+// per tweet. Lets eval show, per RUBRIC.md edit, whether the LLM's grades moved closer to the hand
+// votes. Read-only and CREATE-free — same doctrine as loadRubricScores: a missing rubric_scores
+// table just means "no versions yet" → [].
+export interface ShaScores { sha: string; firstTs: string; scores: Map<string, number> }
+
+export function loadRubricScoresBySha(db: DatabaseSync): ShaScores[] {
+  let shas: { rubric_sha: string; firstTs: string }[];
+  try {
+    // firstTs = MIN(ts) for the sha (ISO strings sort chronologically) — when this version debuted.
+    shas = db.prepare(
+      `SELECT rubric_sha, MIN(ts) firstTs FROM rubric_scores GROUP BY rubric_sha`,
+    ).all() as { rubric_sha: string; firstTs: string }[];
+  } catch { return []; } // "no such table: rubric_scores"
+  return shas.map(({ rubric_sha: sha, firstTs }) => {
+    // latest score per tweet WITHIN this sha (the same MAX(rowid) pattern as loadRubricScores).
+    const rows = db.prepare(`
+      SELECT s.tweet_id, s.score FROM rubric_scores s
+      JOIN (SELECT tweet_id, MAX(rowid) mr FROM rubric_scores WHERE rubric_sha = ? GROUP BY tweet_id) l
+        ON s.tweet_id = l.tweet_id AND s.rowid = l.mr
+    `).all(sha) as { tweet_id: string; score: number }[];
+    const scores = new Map<string, number>();
+    for (const r of rows) scores.set(r.tweet_id, r.score);
+    return { sha, firstTs, scores };
+  });
+}
+
 // ---- CLI entry (npm run rubric) ----
 // Graceful degradation is the whole contract: a missing binary, an auth failure, or an exhausted
 // quota must print ONE loud line and exit 0 having written NOTHING — scores are optional everywhere

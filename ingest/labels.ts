@@ -2,10 +2,10 @@
 // Nothing here mutates events; re-run any time labeling logic changes (PRD §7.1/§7.2).
 //
 // THE DATA REALITY (drives the whole design): the dense, clean signal is TEXT, not behavior.
-// The ~1,883 calibrated positives are harvested likes/bookmarks; only ~112 ever got an
+// The calibrated positives are harvested likes/bookmarks; only a small fraction ever got an
 // impression row. So v1 is a CONTENT relevance model — P(I'd-engage | text+author) — not a
-// behavioral dwell model (that one would train on 112 examples and starve). The v0 behavioral
-// re-ranker in ranker.ts is a different surface (re-rank what you saw); this powers the digest.
+// behavioral dwell model (that one would train on the impression-having handful and starve).
+// Run `npm run labels` for the live label funnel (counts here go stale — the report doesn't).
 import type { DatabaseSync } from "node:sqlite";
 import { hashStr } from "./ranker_v1.ts";
 
@@ -152,6 +152,8 @@ export function buildLabels(db: DatabaseSync): LabeledRow[] {
 export function labelReport(rows: LabeledRow[]): string {
   const pos = rows.filter(r => r.label === 1);
   const neg = rows.filter(r => r.label === 0);
+  const rpos = rows.filter(r => r.kind === "review_pos").length;
+  const rneg = rows.filter(r => r.kind === "review_neg").length;
   const mean = (xs: number[]) => xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0;
   const lines = [
     `positives:        ${pos.length}`,
@@ -159,6 +161,8 @@ export function labelReport(rows: LabeledRow[]): string {
     `char_len  pos/neg: ${mean(pos.map(r => r.char_len)).toFixed(1)} / ${mean(neg.map(r => r.char_len)).toFixed(1)}  ← confounder; controlled, never rewarded`,
     `media%    pos/neg: ${(100 * mean(pos.map(r => r.media_present))).toFixed(0)}% / ${(100 * mean(neg.map(r => r.media_present))).toFixed(0)}%`,
     `thread%   pos/neg: ${(100 * mean(pos.map(r => r.is_thread))).toFixed(0)}% / ${(100 * mean(neg.map(r => r.is_thread))).toFixed(0)}%`,
+    ``,
+    `hand-signed 👍/👎: ${rpos} / ${rneg}  → ${(rpos * rneg).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",")} preference pairs for the gate`,
   ];
   return lines.join("\n");
 }

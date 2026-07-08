@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import type { LabeledRow } from "./labels.ts";
 import { labelReport } from "./labels.ts";
 import { train, predict } from "./ranker_v1.ts";
-import { ndcgAt, averagePrecision, splitByTime, runEval } from "./eval.ts";
+import { ndcgAt, averagePrecision, auc, aucOnKeywordTies, runEval, formatEval } from "./eval.ts";
 import { runProbe, type SeenRow } from "./probe.ts";
 
 const mk = (o: Partial<LabeledRow>): LabeledRow => ({
@@ -55,36 +55,7 @@ describe("logistic regression", () => {
   });
 });
 
-describe("split & label sanity", () => {
-  it("stratifies both classes into train and test by time", () => {
-    const rows: LabeledRow[] = [];
-    for (let i = 0; i < 10; i++) {
-      const d = `2024-01-${String(i + 1).padStart(2, "0")}T00:00:00Z`;
-      rows.push(mk({ tweet_id: `p${i}`, label: 1, created_at: d }));
-      rows.push(mk({ tweet_id: `n${i}`, label: 0, created_at: d }));
-    }
-    const { train: tr, test } = splitByTime(rows, 0.7);
-    assert.ok(tr.some(r => r.label === 1) && tr.some(r => r.label === 0));
-    assert.ok(test.some(r => r.label === 1) && test.some(r => r.label === 0));
-    // test holds the NEWER rows
-    assert.ok(test.every(r => Date.parse(r.created_at) >= Date.parse("2024-01-08T00:00:00Z")));
-  });
-
-  it("review kinds go 100% to test — hand-signed gold never trains any arm", () => {
-    const rows: LabeledRow[] = [];
-    for (let i = 0; i < 10; i++) {
-      const d = `2024-01-${String(i + 1).padStart(2, "0")}T00:00:00Z`;
-      rows.push(mk({ tweet_id: `rp${i}`, label: 1, kind: "review_pos", created_at: d }));
-      rows.push(mk({ tweet_id: `rn${i}`, label: 0, kind: "review_neg", created_at: d }));
-      rows.push(mk({ tweet_id: `p${i}`, label: 1, kind: "pos", created_at: d }));
-    }
-    const { train: tr, test } = splitByTime(rows, 0.7);
-    assert.equal(tr.filter(r => r.kind.startsWith("review")).length, 0, "no review row in train");
-    assert.equal(test.filter(r => r.kind.startsWith("review")).length, 20, "every review row in test");
-    // behavioral kinds still time-split 70/30
-    assert.ok(tr.some(r => r.kind === "pos") && test.some(r => r.kind === "pos"));
-  });
-
+describe("label sanity", () => {
   it("labelReport surfaces counts and the char_len confounder", () => {
     const rows = [mk({ label: 1, char_len: 156 }), mk({ label: 0, char_len: 122 })];
     const rep = labelReport(rows);
@@ -92,37 +63,14 @@ describe("split & label sanity", () => {
     assert.match(rep, /char_len/);
   });
 
-  it("runEval reports same-era + full pools with a ship verdict on a separable toy set", () => {
-    const rows: LabeledRow[] = [];
-    for (let i = 0; i < 40; i++) {
-      const d = `2024-0${1 + (i % 6)}-01T00:00:00Z`;
-      rows.push(mk({ tweet_id: `p${i}`, label: 1, kind: "pos", text: "ai llm model agent gpt", created_at: d, char_len: 22 }));
-      rows.push(mk({ tweet_id: `h${i}`, label: 0, kind: "hard_neg", text: "garden soup recipe cat", created_at: d, char_len: 22 }));
-      rows.push(mk({ tweet_id: `e${i}`, label: 0, kind: "easy_neg", text: "weather traffic news bus", created_at: d, char_len: 24 }));
-    }
-    const res = runEval(rows);
-    assert.equal(res.sameEra.rows.length, 6);
-    assert.ok(res.sameEra.rows.find(r => r.name === "v1 LR (full)"));
-    assert.equal(typeof res.sameEra.ships, "boolean");
-    assert.ok(res.full.rows.find(r => r.name === "random"));
-  });
-
-  it("M12 audit pool: reviewAudit ranks ONLY explore-served votes; reviewOnly keeps them all", () => {
-    const rows: LabeledRow[] = [];
-    for (let i = 0; i < 30; i++) {
-      const d = `2024-0${1 + (i % 6)}-01T00:00:00Z`;
-      // 15/15 explore-served + 15/15 taste-served + 10 context-free — all review kind
-      const lane = i < 15 ? "explore" : "taste";
-      rows.push(mk({ tweet_id: `ap${i}`, label: 1, kind: "review_pos", text: `good ${i}`, created_at: d, served_lane: lane }));
-      rows.push(mk({ tweet_id: `an${i}`, label: 0, kind: "review_neg", text: `bad ${i}`, created_at: d, served_lane: lane }));
-    }
-    for (let i = 0; i < 10; i++) {
-      rows.push(mk({ tweet_id: `cf${i}`, label: i % 2 as 0 | 1, kind: i % 2 ? "review_pos" : "review_neg", created_at: "2024-01-01T00:00:00Z", served_lane: null }));
-    }
-    const res = runEval(rows);
-    assert.equal(res.reviewAudit.n, 30, "audit pool = balanced explore-served votes only (15/15)");
-    assert.equal(res.reviewOnly.n, 70, "main gate keeps every review row (35 pos / 35 neg balanced)");
-    assert.ok(res.reviewAudit.rows.find(r => r.name.startsWith("keyword")), "audit pool ranks the same arms");
+  it("labelReport prints the preference-pair count for the gate (no 50/50 balance)", () => {
+    const rows = [
+      ...Array.from({ length: 3 }, (_, i) => mk({ tweet_id: `rp${i}`, label: 1, kind: "review_pos" })),
+      ...Array.from({ length: 4 }, (_, i) => mk({ tweet_id: `rn${i}`, label: 0, kind: "review_neg" })),
+    ];
+    // 3 👍 × 4 👎 = 12 preference pairs; the old "honest-gate n=… after 50/50 balance" phrasing is gone.
+    assert.match(labelReport(rows), /hand-signed 👍\/👎: 3 \/ 4\s+→ 12 preference pairs for the gate/);
+    assert.doesNotMatch(labelReport(rows), /50\/50 balance/);
   });
 
   it("behavioral probe: detects dwell signal when present, and random stays ~0.5 on the balanced pool", () => {
@@ -145,18 +93,82 @@ describe("split & label sanity", () => {
     const rnd = f.rows.find(r => r.name === "random")!;
     assert.ok(rnd.map > 0.35 && rnd.map < 0.65, `balanced random MAP should be ~0.5, got ${rnd.map}`);
   });
+});
 
-  it("random baseline is label-independent AND the gate is balanced (no saturation, no id leak)", () => {
-    // positives get high-id strings, negs low-id — mirrors the real snowflake/era split.
-    // The same-era gate is now 50/50 class-balanced (balancePool), so a correct random baseline
-    // scores MAP ≈ 0.5 — NOT ~perfect (would mean a tweet_id/era leak) and NOT ~pos-fraction
-    // (would mean the pool is saturated/imbalanced and the metric can't discriminate).
+describe("AUC gate", () => {
+  const P = (id: string, o: Partial<LabeledRow> = {}) => mk({ tweet_id: id, label: 1, kind: "review_pos", ...o });
+  const N = (id: string, o: Partial<LabeledRow> = {}) => mk({ tweet_id: id, label: 0, kind: "review_neg", ...o });
+
+  it("perfect separator → 1.0, inverted → 0.0, constant → 0.5", () => {
+    const pos = [P("p0", { char_len: 10 }), P("p1", { char_len: 20 })];
+    const neg = [N("n0", { char_len: 1 }), N("n1", { char_len: 2 })];
+    assert.equal(auc(pos, neg, r => r.char_len), 1);   // every 👍 scores above every 👎
+    assert.equal(auc(pos, neg, r => -r.char_len), 0);  // exactly inverted
+    assert.equal(auc(pos, neg, () => 5), 0.5);         // constant → all ties → ½
+  });
+
+  it("label-independent random arm lands in [0.4, 0.6] on a ~200-row pool", () => {
     const rows: LabeledRow[] = [];
-    for (let i = 0; i < 100; i++) {
-      rows.push(mk({ tweet_id: `90${i}`, label: 1, kind: "pos", created_at: "2024-01-01T00:00:00Z" }));
-      for (let j = 0; j < 2; j++) rows.push(mk({ tweet_id: `10${i}_${j}`, label: 0, kind: "hard_neg", created_at: "2024-01-01T00:00:00Z" }));
+    for (let i = 0; i < 100; i++) { rows.push(P(`p${i}`)); rows.push(N(`n${i}`)); }
+    const rnd = runEval(rows).reviewOnly.rows.find(r => r.name === "random")!;
+    assert.ok(rnd.auc > 0.4 && rnd.auc < 0.6, `random AUC should be ≈0.5, got ${rnd.auc}`);
+  });
+
+  it("keyword-tied cut selects EXACTLY the equal-keyword-score pairs", () => {
+    // texts chosen for known AI_LEXICON hit counts: "xyz"→0, "ai"→1, "ai llm"→2.
+    const pos = [P("p0", { text: "xyz", char_len: 100 }), P("p1", { text: "ai", char_len: 100 }), P("p2", { text: "ai llm", char_len: 100 })];
+    const neg = [N("n0", { text: "xyz", char_len: 1 }), N("n1", { text: "ai", char_len: 1 }), N("n2", { text: "ai llm", char_len: 1 })];
+    const t = aucOnKeywordTies(pos, neg, r => r.char_len);
+    // only the 3 diagonal pairs share a keyword score (0-0, 1-1, 2-2); the other 6 cross pairs differ.
+    assert.equal(t.pairs, 3, "exactly the equal-keyword pairs are selected");
+    assert.equal(t.auc, 1, "char_len separates 👍>👎 on every selected pair");
+    // a scorer that does nothing on those pairs → 0.5 (all ties), proving the subset, not luck.
+    assert.equal(aucOnKeywordTies(pos, neg, () => 7).auc, 0.5);
+  });
+
+  it("rigged: a candidate separates where keyword is blind → ships with that champion, diff-CI lo > 0", () => {
+    const rows: LabeledRow[] = [];
+    const scores = new Map<string, number>();
+    for (let i = 0; i < 30; i++) {
+      // identical text → keyword ties on ALL pairs (0.5, structurally blind); rubric separates cleanly.
+      rows.push(P(`p${i}`, { text: "same words", char_len: 5, created_at: "2024-01-01T00:00:00Z" }));
+      rows.push(N(`n${i}`, { text: "same words", char_len: 5, created_at: "2024-01-01T00:00:00Z" }));
+      scores.set(`p${i}`, 9); scores.set(`n${i}`, 1);
     }
-    const rnd = runEval(rows).sameEra.rows.find(r => r.name === "random")!;
-    assert.ok(rnd.map > 0.35 && rnd.map < 0.65, `balanced random MAP should be ~0.5, got ${rnd.map}`);
+    const res = runEval(rows, { sha: "rig", scores });
+    assert.equal(res.reviewOnly.ships, true, "the rubric candidate clears the gate");
+    assert.equal(res.reviewOnly.champion, "rubric (LLM judge)");
+    const arm = res.reviewOnly.rows.find(r => r.name.startsWith("rubric"))!;
+    const kw = res.reviewOnly.rows.find(r => r.name.startsWith("keyword"))!;
+    assert.ok(arm.auc > kw.auc, "rubric all-pairs AUC beats keyword");
+    assert.ok(arm.diffVsKw && arm.diffVsKw[0] > 0, `diff-CI lo > 0, got ${JSON.stringify(arm.diffVsKw)}`);
+    assert.ok(!kw.diffVsKw, "keyword carries no diff against itself");
+    assert.match(formatEval(res), /SHIP/);
+  });
+
+  it("tiny pool → INCONCLUSIVE and ships=false (below the floor, no verdict either way)", () => {
+    const rows: LabeledRow[] = [];
+    for (let i = 0; i < 5; i++) { rows.push(P(`p${i}`)); rows.push(N(`n${i}`)); } // 10 total < 40
+    const res = runEval(rows);
+    assert.equal(res.reviewOnly.ships, false);
+    assert.match(formatEval(res), /INCONCLUSIVE/);
+  });
+
+  it("integration: audit cut = ✧explore-served votes only; main gate keeps every review row", () => {
+    const rows: LabeledRow[] = [];
+    for (let i = 0; i < 20; i++) {
+      rows.push(P(`ep${i}`, { text: "ai model", served_lane: "explore" }));
+      rows.push(N(`en${i}`, { text: "soup", served_lane: "explore" }));
+      rows.push(P(`tp${i}`, { text: "ai model", served_lane: "taste" }));
+      rows.push(N(`tn${i}`, { text: "soup", served_lane: "taste" }));
+    }
+    const res = runEval(rows);
+    assert.equal(res.reviewAudit.nPos, 20, "audit pool = explore-served 👍 only");
+    assert.equal(res.reviewAudit.nNeg, 20, "audit pool = explore-served 👎 only");
+    assert.equal(res.reviewOnly.nPos, 40, "main gate keeps all 👍 (explore + taste)");
+    assert.equal(res.reviewOnly.nNeg, 40, "main gate keeps all 👎");
+    assert.ok(res.reviewAudit.rows.find(r => r.name.startsWith("keyword")), "audit ranks the same arms");
+    assert.ok(res.reviewOnly.rows[0].aucCI, "main gate got a bootstrap CI (both classes present)");
+    assert.ok(res.reviewAudit.rows[0].aucCI, "audit cut bootstrapped too (both classes present)");
   });
 });
