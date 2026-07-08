@@ -1,7 +1,7 @@
 // M6 — Ranker v1: a learned CONTENT relevance model. Logistic regression over hashed
 // bag-of-words + author, with char_len/media/thread as controls (regressed in so the model
 // can't use length as a topic proxy — PRD §7.2 invariant). Pure TS, no deps, no Python:
-// 2k examples train in milliseconds. Skipped GBT — add only if LR loses the ship gate AND
+// a few thousand examples train in milliseconds. Skipped GBT — add only if LR loses the ship gate AND
 // there's evidence nonlinearity helps. The eval (eval.ts) decides whether this ships at all.
 import type { LabeledRow } from "./labels.ts";
 

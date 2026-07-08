@@ -269,10 +269,10 @@ export function buildTaste(db: DatabaseSync): TasteModel {
   const idf = new Map<string, number>();
   for (const [t, d] of df) idf.set(t, Math.log(N / (1 + d)));
 
-  // Leak guard (M9): a tweet can be BOTH liked and hand-reviewed (18 such rows exist). Reviewed
-  // tweets are the eval gate's test pool — if their text feeds the profile, the eval mix/taste arms
-  // score gate rows against their own text. Excluding them mirrors labels.ts ("an explicit verdict
-  // overrides the harvested sources") and costs ≤18 of ~1,900 profile texts in the product.
+  // Leak guard (M9): a tweet can be BOTH liked and hand-reviewed. Reviewed tweets are the eval
+  // gate's test pool — if their text feeds the profile, the eval mix/taste arms score gate rows
+  // against their own text. Excluding them mirrors labels.ts ("an explicit verdict overrides the
+  // harvested sources") and costs only the small liked∩reviewed overlap (`npm run labels`).
   // GROUP BY: positives are a SET of tweets (labels.ts / buildAuthorPrior convention) — a tweet
   // liked AND bookmarked must not weigh its text 2x in the centroid. Engagement-count weighting,
   // if ever wanted, should be a deliberate feature everywhere, not a JOIN artifact here.
