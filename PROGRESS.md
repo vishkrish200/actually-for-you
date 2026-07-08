@@ -22,17 +22,21 @@ and stays the verdict-maker — ~2 weeks + the 30-judged-event floor (16/30 as o
   can't see"; ✧ audit = serve-bias-free, M12 doctrine intact). Pre-build probe evidence: on the
   same votes where MAP said "tightest tie yet", rubric AUC 0.705 vs keyword 0.626, diff CI
   [+0.023, +0.132] — the tie was the instrument, not the arms.
-- **First gate reading (n=465: 191👍/274👎): SHIP ✅ mix — MARGINAL.** mix 0.6921 vs keyword
-  0.6291, diff CI **[+0.002, +0.121]** — lo barely > 0. Read it as the guardrail lifting, not a
-  coronation: do NOT re-weight or tune against it; the interleave decides (early lean agrees —
-  mix 12 credits vs keyword 2, both day-wins — but 16/30 judged events = officially insufficient).
-- **Rubric arm is coverage-dragged, not weak:** 26 fresh votes unscored at the latest sha
-  (439/465) hit the −1 rank-last sentinel → pure-rubric prints 0.672; on scored rows it's ≈0.706.
-  `npm run rubric` closes the gap (or tomorrow's 08:00 job); re-read after.
+- **Gate reading (n=465: 191👍/274👎, coverage 465/465): SHIP ✅ — TWO clearers, rubric champion.**
+  rubric 0.7077, diff CI **[+0.025, +0.129]**; mix 0.6963, diff CI [+0.006, +0.125]; taste tied
+  with keyword; both clearers also beat char_len (0.6748) point-wise. Guardrail read ONLY — do
+  NOT re-weight or tune against it; the interleave decides (early lean agrees — mix 12 credits
+  vs keyword 2, both day-wins — but 16/30 judged events = officially insufficient). Pure rubric
+  edging the mix is an ONLINE question for a future matchup (rubric vs mix) after the current
+  mix-vs-keyword read concludes — not a weight-tuning prompt.
+- **Coverage gap CLOSED same day:** `npm run rubric` scored 500 (26 review-pool + 474 candidates,
+  one batch retry) → 465/465 at sha `95de0c7e`; the −1 sentinel drag is gone (rubric arm 0.672 →
+  0.7077). The gate line above IS the post-scoring read.
 - **Judge table (new, per rubric_sha):** generic `dd6304` AUC 0.687 → personalized `8ff3d8ea`
-  **0.724** → latest `95de0c7e` 0.706. Personalization genuinely helped; the newest edit reads a
-  touch below v1. OBSERVE ONLY — the printed warning is the doctrine: never iterate RUBRIC.md
-  against this table.
+  **0.724** → latest `95de0c7e` 0.708 (the only row at full 465/465 coverage; v1's 0.724 sits on
+  its own 421-row subset, so the v1-vs-v2 gap is suggestive, not comparable). Personalization
+  genuinely helped over generic. OBSERVE ONLY — the printed warning is the doctrine: never
+  iterate RUBRIC.md against this table.
 - **Interleave credits fixed (same clock, same floor):** credits = opens + 👍 **− 👎**, may go
   negative. Downs are ~60% of all judgments and opens are structurally rare (7 ever) — the old
   formula collapsed days toward 0–0 ties. Floor/CI/TIED doctrine unchanged.
@@ -43,8 +47,7 @@ and stays the verdict-maker — ~2 weeks + the 30-judged-event floor (16/30 as o
   digest_log, and engaged tweets are excluded from future digests — watch the trend, not the
   absolute).
 - **User's parallel jobs:** vote daily (✧ explore cards especially — the audit pool is 0👍/2👎);
-  run `npm run rubric` once to close the 26-vote coverage gap; let the interleave accumulate
-  before believing any lean.
+  let the interleave accumulate before believing any lean.
 
 ---
 
