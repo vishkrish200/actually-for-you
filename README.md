@@ -2,11 +2,13 @@
 
 **A single-user re-ranker for the X (Twitter) timeline.** A Chrome extension quietly captures how
 I actually read my feed — dwell time, detail-opens, likes, bookmarks — and a local pipeline uses
-those signals to re-rank the same tweets by *my* revealed taste instead of X's engagement-maximizing
-algorithm. It delivers a calibrated daily digest to my phone.
+those signals to rank tweets by *my* revealed taste instead of X's engagement-maximizing
+algorithm. It delivers a calibrated daily digest to my phone, runs a blind A/B between rankers
+inside every slate it serves, and grades itself against my hand votes.
 
-> The most interesting part isn't the model. It's the **eval gate that told me not to ship my
-> model** — and why listening to it was the right call. More on that below.
+> The most interesting part isn't any model. It's the **eval stack** — the gate that told me not
+> to ship my first model, and the later discovery that the gate itself had become the wrong
+> instrument. Both stories below.
 
 ---
 
@@ -14,8 +16,10 @@ algorithm. It delivers a calibrated daily digest to my phone.
 
 ![The digest reader — tweets re-ranked by taste-match to my likes, with time-window tabs](docs/demo.gif)
 
-_The digest reader: every tweet carries a **✦ taste-match %** (cosine similarity to my ~2,900
-likes), with All / 7-day / 48h windows. Ranked by me, not the algorithm._
+_The digest reader: every card carries a **✦ score** — a blend of taste-match to my ~2,900
+curated likes, an LLM grade against my written rubric, and an author prior — with All / 7-day /
+48h windows and in-flow 👍/👎 that feed the eval's gold labels. Two rankers are secretly
+interleaved in every slate; nothing in the UI reveals which arm picked a card._
 
 ---
 
@@ -29,28 +33,40 @@ data never leaves my machine.
 ## How it works
 
 ```
-  x.com  ─────────────►  Chrome extension (MV3)  ─────────►  local ingest server  ──►  SQLite
-          scroll/read      · network hook (GraphQL)            (Node, node:sqlite,      (append-only
-                           · dwell state machine                zero deps)               raw events)
-                           · IndexedDB durable queue                    │
-                                                                        ▼
-                                              labels ──► ranker ──► digest ──► 8am iMessage
-                                           (re-derived   (lanes +   (taste-match   (launchd)
-                                            from raw)     MMR)       to your likes)
+ x.com ──────────► Chrome extension (MV3) ─────────► local ingest server ──► SQLite
+  scroll/read       · GraphQL network hook             (Node, node:sqlite,     (append-only
+  + a 30-min        · dwell state machine               zero deps)              raw events)
+  poller tab        · IndexedDB durable queue                   │
+                                                                ▼
+                labels ───► mix ranker ───► interleaved digest ───► 8am iMessage
+             (re-derived    taste + LLM rubric    two arms blind-split     (launchd)
+              from raw)     + author prior;       each slate; serves,
+                            ~10% explore, MMR     opens, votes logged
 ```
 
 - **Capture** (`extension/`) — a content script + a `MAIN`-world network hook. It intercepts X's
   GraphQL timeline responses and walks the nested tweet shape; a separate `IntersectionObserver`
-  state machine tracks dwell/opens/engagements. The two streams have independent failure boundaries
-  so a capture bug in one never silently takes down the other.
+  state machine tracks dwell/opens/engagements. The two streams have independent failure
+  boundaries so a capture bug in one never silently takes down the other. An ephemeral background
+  tab also polls `x.com/home` every 30 minutes through the *same* capture path — perfect
+  first-party traffic, no API replay, nothing to rot when X rotates its GraphQL internals. Polled
+  tweets are **candidates only**: they can never mint dwell or engagement signals.
 - **Ingest** (`ingest/server.ts`) — an HTTP server on `:2727`, append-only writes to SQLite via
   Node's built-in `node:sqlite`. **Zero runtime dependencies.** Raw events are immutable; every
   label is *re-derived* from them, never edited in place.
-- **Rank** (`ingest/ranker.ts`, `digest.ts`) — a lane-based scorer (bookmark / liked-author / fresh
-  / backlog / resurface / **explore**) with MMR for diversity, plus a taste-profile digest that
-  scores tweets by TF-IDF cosine similarity to my ~2,900 liked tweets.
-- **Deliver** (`ingest/daily.ts`) — a launchd job texts a daily digest link at 8am. The server
-  auto-starts at login, so the whole thing runs hands-off.
+- **Rank** (`ingest/digest.ts`) — a named-knob blend: `0.5·z(taste) + 0.3·z(rubric) +
+  0.2·z(author)`, z-scores winsorized at ±2. *Taste* is TF-IDF cosine to a centroid of my curated
+  likes (length-normalized, so long tweets can't buy score). *Rubric* is an LLM grading each
+  tweet 0–10 against a personal `RUBRIC.md` — text-only, no author or metrics, so quality can't
+  proxy fame — by shelling out to the local `claude` CLI in headless mode: still zero deps, no
+  API key, and if the CLI is missing or out of quota the run skips loudly and missing scores rank
+  neutral. *Author prior* derives from my engagement history only. ~10% of every digest is an
+  **explore** lane sampled from tweets the ranker did *not* pick, plus token-overlap MMR so
+  near-duplicate takes don't cluster.
+- **Deliver + instrument** (`ingest/daily.ts`, `server.ts`) — a launchd job texts the digest at
+  8am; the server auto-starts at login. Every serve is logged with its rank, lane, drafting arm,
+  and serve-time score parts; opens and in-flow votes flow back. The loop closes: what I read
+  today is tomorrow's eval data.
 
 ## The hard parts (what I'd talk about in an interview)
 
@@ -71,51 +87,81 @@ specific ways:
 - Dwell timers leaked minutes when fast-scrolling dropped the exit event; caught it via *identical
   dwell values shared across distinct tweets* (several leaked timers draining at once on tab-blur).
   Fixed with a per-interval cap.
+- The nightly LLM scorer decayed to partial coverage. Root cause: the `claude` CLI ignores
+  SIGTERM while riding out API backoff, so a 120s timeout left 14-minute zombie processes and the
+  batch aborted. Fixed with a 600s deadline + SIGKILL — and the eval prints its coverage next to
+  every rubric verdict, so a starved judge can never masquerade as a confident one.
 
-**3. The eval that said "don't ship."** This is the part I'm proudest of. I built a learned ranker
-(logistic regression, hashing-trick bag-of-words) and an offline replay harness as the ship gate:
-it only ships if it beats a simple keyword baseline on held-out data.
+**3. The eval stack — a gate that said "don't ship," then got rebuilt when *it* became the
+suspect.** This is the part I'm proudest of.
 
-It didn't. So I didn't ship it — and the harness itself is the deliverable:
+*Act one: the gate kills my model.* I built a learned ranker (logistic regression, hashing-trick
+bag-of-words) with an offline replay harness as the ship gate: beat a keyword baseline on held-out
+data or don't ship. Before I could trust its verdict I had to catch three eval bugs — a `random`
+baseline scoring a perfect 1.0 (tweet IDs are time-ordered snowflakes; any function of the ID
+leaks the label), a test pool so imbalanced the metric saturated under *any* scorer, and a
+near-circular baseline (my labels were partly curated *by* those keywords). On the fair gate the
+model honestly lost — on clean human labels it ranked *below random* — so the learned-ranker
+thread is **closed by evidence**, and the confounder discipline it forced survives everywhere:
+`char_len`/`media` are controls, never reward features, so length can't earn score.
 
-- **First "SHIP ✅" was a lie.** The random baseline scored a *perfect* 1.0 — the tweet IDs are
-  time-ordered snowflakes, so any function of the ID leaked the label. Fixed with a
-  label-independent shuffle.
-- **The gate was saturated.** After a time-split the "same-era" test pool was ~86% positive, so
-  NDCG@10 was maxed out under *any* scoring — `random` and `char_len` both hit 1.0. The metric
-  wasn't measuring anything. I balanced the pool 50/50 so `random → ~0.5` and the gate could
-  actually discriminate.
-- **On a fair gate, the model honestly loses:** keyword baseline MAP **0.735** vs learned model
-  **0.559**. And `char_len` alone (0.732) nearly matches keyword — a tell that the baseline is
-  near-circular (my labels were curated partly *by* those keywords). Chasing a model to beat a
-  circular baseline is the wrong move, so I stopped. **HOLD is the gate working, not a failure.**
+*Act two: the instrument becomes the suspect.* The replacement rankers (LLM rubric, taste cosine,
+the blend) kept reading "statistically tied with keyword" on that gate, week after week. The tie
+turned out to be the metric, not the rankers: pooled MAP threw away ~20% of my hand votes to
+class-balancing, mostly scored the head of one giant ranked pile, and quietly handed keyword every
+pair its integer word-counts couldn't order — **27% of all 👍/👎 pairs**, concentrated exactly
+where a taste ranker earns its keep (good-AI vs AI-flavored junk). I rebuilt the gate as
+**pairwise preference accuracy**: AUC over every hand-signed pair, a paired item-level bootstrap
+for the (arm − keyword) CI, plus advisory cuts for keyword-tied pairs and for serve-bias-free
+explore votes. Same votes, honest ruler: the rubric orders my preferences at **0.71 AUC vs
+keyword's 0.63**, CI excluding zero. The weeks of "tie" were the ruler's fault — a claim I only
+trust because the same tracing discipline from act one got pointed at the gate itself.
 
-The confounder discipline is baked in: `char_len` / `media_present` are **controls** — included in
-training to absorb confounding, then zeroed at predict so tweet length can never *earn* score.
+*Act three: offline is only a guardrail.* The deciding eval runs on the live product: **blind
+team-draft interleaving**. Two rankers secretly split every digest slate (deterministic seeded
+draft, pixel-identical UI, drafting arm logged per card); credits are net judgments
+(opens + 👍 − 👎); verdicts come from a day-paired bootstrap CI; and the report *refuses* to print
+a lean below a judged-event floor. Around it: a per-version **judge calibration** table (did
+editing my rubric actually move the LLM toward my votes? generic 0.69 → personalized 0.72), a
+daily **scorecard** (junk@10 per digest day), and a **recall probe** (organic likes the digest
+never served me first — the system's only miss-detector).
+
+The circularity rules are the spine of all of it: hand-signed 👍/👎 are the *only* gold labels;
+the keyword lexicon and the LLM's scores may **rank** but may never **label**; nothing ever trains
+on reviews; and the explore lane doubles as an audit pool no ranker selected, so serve-selection
+bias has a control group.
 
 ## Deliberately out of scope
 
 Naming what I chose *not* to build:
 - **Multi-user / cloud deploy.** It scrapes a private GraphQL surface keyed to one person's
   behavior; multi-tenant is a ToS and privacy minefield that adds no engineering value here.
-- **A discovery engine.** This re-ranks tweets I've *seen*, by design — a re-ranker, not a
-  recommender for unseen content.
-- **Shipping a learned ranker.** The honest eval says the keyword/similarity baseline wins today;
-  the learned model waits for denser behavioral data.
+- **A general recommender.** Candidates come only from my own logged-in surface — what I scrolled
+  plus a background poll of my own home timeline. No crawling, no firehose, no unseen-corpus
+  indexing.
+- **Bigger models.** LR, embeddings, and a behavioral ranker each lost on a non-circular gate —
+  closed by evidence, not deferred by laziness. Today's champions are judges, not trained models.
+  GBTs, bandits, and online weight-learning stay out until an eval says capacity is the
+  bottleneck (it's labels).
 
 ## Stack
 
 | Layer | Choice | Why |
 |---|---|---|
-| Extension | WXT / MV3, TypeScript | HMR + content-script bundling, no hand-rolled build |
+| Extension | esbuild + MV3, TypeScript | a 4-line build script; the WXT scaffold was removed once it earned nothing |
 | Ingest | Node + `node:sqlite` | built-in SQLite, **zero runtime deps**, no native compile |
-| Ranker | Pure TypeScript | logistic regression + TF-IDF, no ML framework |
-| Tests | vitest + `node:test` | golden DOM fixtures, dwell state machine, eval metric fixtures |
+| Ranking | Pure TypeScript | TF-IDF cosine + author prior + weighted blend, no ML framework |
+| LLM judge | local `claude` CLI, headless | rubric scoring with zero deps and no API key; degrades gracefully to neutral |
+| Evals | AUC pair gate + team-draft interleave | offline guardrail, online verdict-maker; seeded PRNGs, reproducible run-to-run |
+| Tests | vitest (extension) + `node:test` (ingest) | 38 + 98 green: golden DOM fixtures, dwell machine, metric fixtures, draft-determinism snapshots |
 | Scheduling | macOS launchd | native, no cron daemon, survives reboot |
 
 ## Status
 
-M0–M4 shipped (capture → ingest → read loop → ranker v0). Digest and daily delivery shipped.
-Learned ranker v1 built, evaluated, and **held** on an honest gate. ~25k tweets / 35k impressions
-captured and counting. Full build log in [`PROGRESS.md`](./PROGRESS.md); the spec is
-[`PRD.md`](./PRD.md).
+Thirteen milestones in: capture → ingest → read loop → labels → the learned-ranker HOLD → daily
+delivery → background poller → LLM rubric → weighted mix → serve telemetry → online interleaving →
+the eval rebuild. ~47k tweets, ~66k impressions, and 465 hand-signed votes captured and counting.
+The learned ranker is retired by evidence; the LLM-rubric and mix arms both clear the offline gate
+(AUC 0.71 / 0.70 vs keyword's 0.63, CIs excluding zero), and a live mix-vs-keyword interleave is
+accumulating toward its first online verdict. Full build log in [`PROGRESS.md`](./PROGRESS.md);
+the spec is [`PRD.md`](./PRD.md).
