@@ -30,16 +30,21 @@ section in PROGRESS.md is the plan of record; one phase at a time, user approves
 - `afy.db`, `model.json`, `.env.local` are personal data — gitignored, never commit them.
   `ducky-cli/` is an unrelated project accidentally nested here — never commit it.
 
-## Ship gate (M6, rethought 2026-07-07 — eval.ts)
+## Ship gate (M13 rebuild 2026-07-08 — eval.ts)
 
-The offline gate is a **guardrail**; the online interleave (`npm run interleave`, M11) is the
-verdict-maker. A candidate arm clears the gate ONLY by beating keyword on the **review-only pool**
-(hand-signed labels) on NDCG@10 AND MAP **with a paired (arm − keyword) diff CI excluding 0** — a
-CI straddling 0 = tied, not a win. Every review-pool arm gets that diff CI. Reviews are 100% test:
-no arm trains on them (v1 LR trains on behavioral labels only), so all hand-signed gold feeds the
-gate. Same-era and full pools are confounded LR-era reads, hidden behind `npm run eval -- --all`.
-Don't tune weights/hyperparameters against the gate — that's fitting noise; the interleave is
-where rankers earn their keep.
+The offline gate is a **guardrail**; the online interleave (`npm run interleave`, M11 — net
+credit = opens + 👍 − 👎, may go negative) is the verdict-maker. Gate metric: **pairwise
+preference accuracy (AUC)** over ALL hand-signed 👍/👎 pairs — no balancing, no split, nothing
+trains (reviews are 100% test). A candidate clears ONLY by beating keyword on all-pairs AUC
+**with a paired (arm − keyword) item-bootstrap diff CI excluding 0** — a CI straddling 0 = TIED,
+not a win. Advisory cuts printed alongside, never the gate: keyword-tied pairs (where keyword is
+structurally blind) and the ✧ explore-audit pool (serve-bias-free; where it disagrees with the
+main pool at real n, trust the audit). The judge-calibration table (per-`rubric_sha` AUC vs
+votes) evaluates RUBRIC.md edits directly — NEVER iterate the rubric against it or tune weights
+against any offline pool; the interleave is where rankers earn their keep. v1 LR arms and the
+same-era/full pools are deleted (LR-era scaffolding; git remembers; `ranker_v1.ts` survives only
+as the hashStr home). Product pulse: `npm run scorecard` (per-digest-day junk@K/hits/lanes);
+recall side: `npm run recall` (organic engagements the digest never served — lower-bound).
 
 ## Two packages, different toolchains (don't mix them up)
 
@@ -47,7 +52,8 @@ where rankers earn their keep.
   NOT WXT — that scaffold was removed), **vitest** tests, `web-ext` dev runner. MV3: service
   worker is ephemeral, durable state in IndexedDB.
 - **`ingest/`** — zero-dependency Node (`node --experimental-strip-types`), **node:test**.
-  Scripts: `npm test`, `npm run eval` (ship gate), `labels`, `digest`, `daily`, `probe`, `funnel`.
+  Scripts: `npm test`, `npm run eval` (ship gate), `labels`, `digest`, `daily`, `probe`, `funnel`,
+  `interleave`, `scorecard`, `recall`.
   DB path via `AFY_DB` (default `afy.db`); run from `ingest/`. Stays zero-dep: the M8 rubric
   scorer shells out to the local **`claude` CLI in headless mode** (`claude -p`, billed to the
   user's Claude subscription — NO API key, no SDK, node:child_process is stdlib). Binary via

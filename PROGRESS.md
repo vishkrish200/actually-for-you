@@ -5,7 +5,50 @@ Point new sessions at this file + the PRD for full context.
 
 ---
 
-## ▶ RESUME HERE (2026-07-07)
+## ▶ RESUME HERE (2026-07-08)
+
+**M13 evals rebuild SHIPPED (user-approved): AUC pair gate + net-credit interleave + scorecard /
+judge table / recall probe.** Ingest tests 79 → **98** green (extension untouched at 38). Built by
+three parallel Opus subagents with the main session orchestrating and independently verifying
+(merged full suite, real-db read-only runs, numbers reconciled against a pre-build probe).
+CLAUDE.md's ship-gate section rewritten to the new contract. The M11 interleave clock is UNTOUCHED
+and stays the verdict-maker — ~2 weeks + the 30-judged-event floor (16/30 as of today).
+
+- **Why the gate was rebuilt:** pooled-MAP discarded ~20% of gold to 50/50 balancing, scored only
+  the head of one shuffled pool, and silently credited tweet_id tiebreaks — keyword's integer
+  scores TIE on ~27% of 👍/👎 pairs (and 52% of 👎s are keyword-topical junk it promotes). New
+  gate = pairwise preference accuracy: AUC = P[score(👍) > score(👎)] over ALL hand-signed pairs,
+  paired item bootstrap (B=2000), three cuts (ALL = gate; keyword-tied = advisory "value keyword
+  can't see"; ✧ audit = serve-bias-free, M12 doctrine intact). Pre-build probe evidence: on the
+  same votes where MAP said "tightest tie yet", rubric AUC 0.705 vs keyword 0.626, diff CI
+  [+0.023, +0.132] — the tie was the instrument, not the arms.
+- **First gate reading (n=465: 191👍/274👎): SHIP ✅ mix — MARGINAL.** mix 0.6921 vs keyword
+  0.6291, diff CI **[+0.002, +0.121]** — lo barely > 0. Read it as the guardrail lifting, not a
+  coronation: do NOT re-weight or tune against it; the interleave decides (early lean agrees —
+  mix 12 credits vs keyword 2, both day-wins — but 16/30 judged events = officially insufficient).
+- **Rubric arm is coverage-dragged, not weak:** 26 fresh votes unscored at the latest sha
+  (439/465) hit the −1 rank-last sentinel → pure-rubric prints 0.672; on scored rows it's ≈0.706.
+  `npm run rubric` closes the gap (or tomorrow's 08:00 job); re-read after.
+- **Judge table (new, per rubric_sha):** generic `dd6304` AUC 0.687 → personalized `8ff3d8ea`
+  **0.724** → latest `95de0c7e` 0.706. Personalization genuinely helped; the newest edit reads a
+  touch below v1. OBSERVE ONLY — the printed warning is the doctrine: never iterate RUBRIC.md
+  against this table.
+- **Interleave credits fixed (same clock, same floor):** credits = opens + 👍 **− 👎**, may go
+  negative. Downs are ~60% of all judgments and opens are structurally rare (7 ever) — the old
+  formula collapsed days toward 0–0 ties. Floor/CI/TIED doctrine unchanged.
+- **New daily instruments:** `npm run scorecard` — per-digest-day report card (junk@10/@20 with
+  their n, hits, opens, ✧-vs-core votes; day-1 story: junk@10 72.7% on 07-06 → 12.5% on 07-07).
+  `npm run recall [-- --days=N]` — the miss detector; day-1 finding: 49 organic engagements in
+  7d, 100% captured, **0 ever served by the digest first** (partly structural — 3 days of
+  digest_log, and engaged tweets are excluded from future digests — watch the trend, not the
+  absolute).
+- **User's parallel jobs:** vote daily (✧ explore cards especially — the audit pool is 0👍/2👎);
+  run `npm run rubric` once to close the 26-vote coverage gap; let the interleave accumulate
+  before believing any lean.
+
+---
+
+## 2026-07-07 state (pre-M13 rebuild) — superseded
 
 **Models/evals rethink SHIPPED (user-approved), M11 interleave LIVE, M12 audit pool in place.**
 The offline gate is now a guardrail; the interleave is the verdict-maker. Let data accumulate
@@ -400,6 +443,51 @@ only caller).
 
 Net: ~800 lines + 1 dep removed; ingest tests 41 → 24 (the 17 deleted tests covered deleted code;
 digest gained an explore-lane test). CLAUDE.md updated to match (CI pointer, toolchains, token).
+
+### M13 — Evals rebuild: AUC pair gate, net-credit interleave, scorecard/judge/recall  ✅ BUILT + LIVE 2026-07-08
+
+> Built by three parallel Opus subagents (eval gate / interleave credits / new tools) with the main
+> session orchestrating: disjoint file ownership, per-package tests during build, then a merged
+> full-suite run (**98 green**, was 79), real-db read-only runs of every CLI, and gate numbers
+> reconciled against an independent pre-build probe (AUC parity within 0.003 after same-day pool
+> growth). No schema changes, no server restart needed, no db writes.
+
+**Problem:** the pooled-MAP gate structurally could not see within-topic taste — it discarded ~20%
+of gold to balancing, scored the head of one shuffled pool, and handed keyword's ~27% tied pairs
+to the tweet_id tiebreak. The interleave credit ignored 👎 (60% of judgments; 7 opens ever exist)
+and starved toward TIED. And nothing measured per-day digest quality, judge quality per rubric
+version, or recall.
+
+**Design:**
+- `eval.ts` (rebuilt, trains nothing): gate = AUC over all 👍/👎 pairs (Mann–Whitney by
+  definition; empty side → 0.5 neutral), paired item-level bootstrap (B=2000, seeded) → per-arm
+  CI + (arm − keyword) diff CI; SHIP = candidate all-pairs AUC > keyword AND diff-CI lo > 0;
+  floor = 40 total labels AND ≥10 per class, below it NO verdict either way. Cuts: ALL (gate) /
+  keyword-tied (advisory; keyword pins 0.5 there by construction — built-in sanity) / ✧ audit
+  (M12 doctrine intact). Judge calibration per `rubric_sha` (`loadRubricScoresBySha` in
+  rubric.ts, read-only): coverage, mean👍/👎, rubric-vs-votes AUC, oldest→newest, printed with a
+  do-not-iterate warning. DELETED: v1 arms + training, `splitByTime`, `balancePool`, same-era and
+  full pools, `--all`, NDCG@50 (`ndcgAt`/`averagePrecision` stay exported — probe.ts uses them;
+  `ranker_v1.ts` stays as the hashStr home).
+- `interleave.ts`: net credit = opens + 👍 − 👎, may go negative, never clamped; per-day downs
+  mirror `dayUp` exactly (incl. the NUL map-key delimiter); judged floor, day-wins rule, paired
+  day bootstrap, TIED/LEAN doctrine all unchanged.
+- `scorecard.ts` (`npm run scorecard`): per-digest-day report card — served/up/down, junk@10/@20
+  (each rate printed with its n), opens, ✧-vs-core votes, TOTAL line. Keyed to FIRST serve
+  throughout so every column in a row describes the same tweets (vote INCLUSION identical to
+  funnel's VOTE_SERVE; bucketing deliberately first-serve — documented and test-locked).
+- `recall.ts` (`npm run recall [-- --days=N]`, default 7): organic engagements (minus prunes) →
+  captured → served/MISSED with snippets; prints the lower-bound caveat (organic likes are biased
+  toward what X already showed you).
+
+**Invariants held:** reviews stay eval-only gold; no tuning against any offline pool (now
+explicitly including the judge table); explore lane untouched; every report CLI read-only
+(sqlite_master probes, never CREATE); seeded PRNG in all deterministic paths (recall's wall-clock
+window is CLI-only and pinned in tests).
+
+**First readings (2026-07-08, n=465):** gate SHIP ✅ mix (marginal diff CI [+0.002, +0.121] —
+guardrail read only); judge table 0.687 → 0.724 → 0.706 across rubric versions; scorecard junk@10
+72.7% → 12.5% day-over-day; recall 0/49 served-first. Details + doctrine in the RESUME block.
 
 ---
 
