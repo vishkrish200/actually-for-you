@@ -222,8 +222,12 @@ function req(method: string, urlPath: string, body?: unknown): Promise<{ status:
 
 describe("M10 digest telemetry", () => {
   it("GET /digest appends one digest_log row per served card, ranks from 1", async () => {
-    // A candidate that clears the ≥4-token fragment filter, so the digest serves something.
-    await post({ tweets: [{ ...tweet, tweet_id: "m10-c", text: "telemetry candidate tweet with plenty of tokens" }] });
+    // A candidate that clears the ≥4-token fragment filter AND was organically seen (impression),
+    // so it's digest-eligible and the digest serves something.
+    await post({
+      tweets: [{ ...tweet, tweet_id: "m10-c", text: "telemetry candidate tweet with plenty of tokens" }],
+      impressions: [{ ...impression, impression_id: "imp-m10-c", tweet_id: "m10-c" }],
+    });
     const { status, json } = await req("GET", "/digest?limit=10");
     assert.equal(status, 200);
     assert.ok(json.items.length >= 1, "digest served at least one card");
@@ -268,12 +272,13 @@ describe("M11 digest_log arm attribution", () => {
   it("a served digest writes arm on taste rows (mix|keyword under the live MATCHUP), null on explore", async () => {
     // Enough distinct-token candidates that the live MATCHUP=["mix","keyword"] draft produces a
     // multi-card slate; each taste slot must be stamped with the arm that drafted it, explore null.
+    const m11ids = ["m11-a", "m11-b", "m11-c", "m11-d"];
     await post({ tweets: [
       { ...tweet, tweet_id: "m11-a", text: "an ai llm agent model reasoning benchmark with many tokens here" },
       { ...tweet, tweet_id: "m11-b", text: "openai anthropic claude gemini training inference dataset embeddings" },
       { ...tweet, tweet_id: "m11-c", text: "a totally different topic about sourdough bread and garden tomatoes today" },
       { ...tweet, tweet_id: "m11-d", text: "prompt engineering rag gpu cuda pytorch tensor multimodal robotics agi" },
-    ] });
+    ], impressions: m11ids.map(id => ({ ...impression, impression_id: `imp-${id}`, tweet_id: id })) });
     const before = (db.prepare("SELECT COALESCE(MAX(rowid),0) n FROM digest_log").get() as any).n;
     const { status, json } = await req("GET", "/digest?limit=10");
     assert.equal(status, 200);

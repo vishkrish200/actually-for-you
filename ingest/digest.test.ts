@@ -10,7 +10,8 @@ function seed(): DatabaseSync {
   db.exec(`
     CREATE TABLE tweets (tweet_id TEXT PRIMARY KEY, author_id TEXT, author_handle TEXT, author_name TEXT,
       text TEXT, media TEXT, quoted_id TEXT, created_at TEXT, captured_at TEXT,
-      likes INTEGER, rts INTEGER, replies INTEGER, views INTEGER);
+      likes INTEGER, rts INTEGER, replies INTEGER, views INTEGER, source TEXT DEFAULT 'net');
+    CREATE TABLE impressions (impression_id TEXT PRIMARY KEY, tweet_id TEXT, session_id TEXT, ts TEXT);
     CREATE TABLE engagement_labels (tweet_id TEXT, source TEXT, ts TEXT, PRIMARY KEY(tweet_id,source));
     CREATE TABLE label_prunes (tweet_id TEXT PRIMARY KEY, reason TEXT, ts TEXT);
     CREATE TABLE reviews (rowid INTEGER PRIMARY KEY AUTOINCREMENT, tweet_id TEXT, verdict INTEGER, ts TEXT);
@@ -30,6 +31,8 @@ function seed(): DatabaseSync {
   t.run("C_ai", "x", "X", "this new llm agent model is great at reasoning tasks", "2026-06-01", "2026-06-01");
   t.run("C_off", "y", "Y", "my sourdough bread recipe with garden tomatoes and basil", "2026-06-01", "2026-06-01");
   t.run("C_fin", "z", "Z", "quarterly earnings report shows strong revenue growth for retailers", "2026-06-01", "2026-06-01");
+  // every fixture tweet models organically-seen content → one impression each (candidate-eligibility gate)
+  db.exec("INSERT INTO impressions (impression_id, tweet_id) SELECT tweet_id || '-imp', tweet_id FROM tweets");
   return db;
 }
 
@@ -88,6 +91,8 @@ describe("personalized digest (taste similarity)", () => {
       '[{"type":"video","url":"https://pbs.twimg.com/vid_thumb.jpg"}]', "Q_orig", "2026-06-02", "2026-06-02");
     // a quoting tweet whose original we never captured
     t.run("Q_miss", "m", "M", "llm agents reasoning models quoted from nowhere", "[]", "GONE", "2026-06-02", "2026-06-02");
+    // these tweets were seen too → impressions so they clear the candidate-eligibility gate
+    db.exec("INSERT OR IGNORE INTO impressions (impression_id, tweet_id) SELECT tweet_id || '-imp', tweet_id FROM tweets");
     // limit 30 → exploreN 3 ≥ the below-pool-mean candidates, so every row surfaces in SOME lane
     // regardless of where the z-mix cut lands (this test asserts payload shape, not ranking).
     const items = buildDigest(db, { limit: 30, matchup: null });
@@ -108,6 +113,7 @@ describe("personalized digest (taste similarity)", () => {
     t.run("Q_orig", "orig", "Orig", "llm agents and reasoning models benchmark results", "[]", null, "2026-06-01", "2026-06-01");
     t.run("Q_short", "s", "S", "this llm.", "[]", "Q_orig", "2026-06-02", "2026-06-02"); // <4 tokens
     t.run("F_short", "f", "F", "lol ok.", "[]", null, "2026-06-02", "2026-06-02");       // <4 tokens, no quote
+    db.exec("INSERT OR IGNORE INTO impressions (impression_id, tweet_id) SELECT tweet_id || '-imp', tweet_id FROM tweets");
     const items = buildDigest(db, { limit: 30, matchup: null }); // exploreN 3 → sub-mean rows still surface (see above)
     assert.ok(items.find(i => i.tweet_id === "Q_short"), "short QUOTE tweet kept");
     assert.ok(!items.find(i => i.tweet_id === "F_short"), "short plain fragment still dropped");
@@ -201,7 +207,8 @@ describe("M9 weighted mix (named knobs)", () => {
     db.exec(`
       CREATE TABLE tweets (tweet_id TEXT PRIMARY KEY, author_id TEXT, author_handle TEXT, author_name TEXT,
         text TEXT, media TEXT, quoted_id TEXT, created_at TEXT, captured_at TEXT,
-        likes INTEGER, rts INTEGER, replies INTEGER, views INTEGER);
+        likes INTEGER, rts INTEGER, replies INTEGER, views INTEGER, source TEXT DEFAULT 'net');
+      CREATE TABLE impressions (impression_id TEXT PRIMARY KEY, tweet_id TEXT, session_id TEXT, ts TEXT);
       CREATE TABLE engagement_labels (tweet_id TEXT, source TEXT, ts TEXT, PRIMARY KEY(tweet_id,source));
       CREATE TABLE label_prunes (tweet_id TEXT PRIMARY KEY, reason TEXT, ts TEXT);
       CREATE TABLE reviews (rowid INTEGER PRIMARY KEY AUTOINCREMENT, tweet_id TEXT, verdict INTEGER, ts TEXT);
@@ -217,6 +224,7 @@ describe("M9 weighted mix (named knobs)", () => {
     t.run("M_rub", "nobody1", TEXT, "2026-06-01", "2026-06-01");
     t.run("M_auth", "FAN", TEXT, "2026-06-01", "2026-06-01");
     t.run("M_plain", "nobody2", TEXT, "2026-06-01", "2026-06-01");
+    db.exec("INSERT INTO impressions (impression_id, tweet_id) SELECT tweet_id || '-imp', tweet_id FROM tweets");
     const ins = db.prepare("INSERT INTO rubric_scores (tweet_id, score, model, rubric_sha, ts) VALUES (?,?,?,?,?)");
     ins.run("M_rub", 10, "haiku", "testsha", "2026-07-01T00:00:00Z");
     ins.run("M_plain", 2, "haiku", "testsha", "2026-07-01T00:00:00Z");

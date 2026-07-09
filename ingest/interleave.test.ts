@@ -19,7 +19,8 @@ function seed(): DatabaseSync {
   db.exec(`
     CREATE TABLE tweets (tweet_id TEXT PRIMARY KEY, author_id TEXT, author_handle TEXT, author_name TEXT,
       text TEXT, media TEXT, quoted_id TEXT, created_at TEXT, captured_at TEXT,
-      likes INTEGER, rts INTEGER, replies INTEGER, views INTEGER);
+      likes INTEGER, rts INTEGER, replies INTEGER, views INTEGER, source TEXT DEFAULT 'net');
+    CREATE TABLE impressions (impression_id TEXT PRIMARY KEY, tweet_id TEXT, session_id TEXT, ts TEXT);
     CREATE TABLE engagement_labels (tweet_id TEXT, source TEXT, ts TEXT, PRIMARY KEY(tweet_id,source));
     CREATE TABLE label_prunes (tweet_id TEXT PRIMARY KEY, reason TEXT, ts TEXT);
     CREATE TABLE reviews (rowid INTEGER PRIMARY KEY AUTOINCREMENT, tweet_id TEXT, verdict INTEGER, ts TEXT);
@@ -42,6 +43,8 @@ function seed(): DatabaseSync {
   t.run("kw1", "cold1", "c1", "C1", "ai llm gpt agent model neural training inference transformer reasoning", "2026-06-01", "2026-06-01");
   t.run("kw2", "cold2", "c2", "C2", "openai anthropic gemini claude diffusion embedding dataset benchmark agi rl", "2026-06-01", "2026-06-01");
   t.run("kw3", "cold3", "c3", "C3", "prompt prompting rag embeddings gpu cuda pytorch tensor multimodal robotics", "2026-06-01", "2026-06-01");
+  // every fixture tweet models organically-seen content → one impression each (candidate-eligibility gate)
+  db.exec("INSERT INTO impressions (impression_id, tweet_id) SELECT tweet_id || '-imp', tweet_id FROM tweets");
   return db;
 }
 

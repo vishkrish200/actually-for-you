@@ -337,6 +337,7 @@ export function buildDigest(
   const rows = db.prepare(`
     SELECT tweet_id, author_id, author_handle, author_name, text, media, quoted_id, created_at, likes, rts, replies, views FROM tweets
     WHERE text IS NOT NULL AND text != ''
+      AND (source = 'poll' OR tweet_id IN (SELECT tweet_id FROM impressions))
       AND tweet_id NOT IN (SELECT tweet_id FROM engagement_labels)
       AND tweet_id NOT IN (SELECT tweet_id FROM reviews)
       ${recency}
