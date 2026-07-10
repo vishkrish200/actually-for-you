@@ -466,8 +466,9 @@ export const server = http.createServer(async (req, res) => {
     res.end(html);
   };
 
-  // Personalized AI digest: corpus ranked by similarity to your likes (digest.ts). ?days=N to limit
-  // to recently-captured tweets (0 = all). The product surface.
+  // Personalized AI digest: corpus ranked by similarity to your likes (digest.ts). ?days=N limits
+  // by AUTHORED age (tweets.created_at, 0 = all) — not capture age; see buildDigest. The product
+  // surface.
   // M10 open receipts from the reading client (fire-and-forget in openTweet, same pattern as
   // votes). Token-authed like every write. Opens on never-served tweets (review mode, quoted
   // cards) land here too — harmless, funnel.ts joins through digest_log so strays don't count.

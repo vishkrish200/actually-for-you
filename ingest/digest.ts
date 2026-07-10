@@ -333,20 +333,25 @@ export function buildDigest(
   const m = buildTaste(db);
   const prior = buildAuthorPrior(db);
   const rubric = loadRubricScores(db); // latest sha; tolerates a never-scored db (empty map → z=0)
-  const recency = days > 0 ? `AND datetime(captured_at) > datetime('now','-${days} days')` : "";
   const rows = db.prepare(`
     SELECT tweet_id, author_id, author_handle, author_name, text, media, quoted_id, created_at, likes, rts, replies, views FROM tweets
     WHERE text IS NOT NULL AND text != ''
       AND (source = 'poll' OR tweet_id IN (SELECT tweet_id FROM impressions))
       AND tweet_id NOT IN (SELECT tweet_id FROM engagement_labels)
       AND tweet_id NOT IN (SELECT tweet_id FROM reviews)
-      ${recency}
   `).all() as any[];
+
+  // days filters on AUTHORED age (created_at), not capture age — X resurfaces years-old tweets
+  // into the feed, so "captured yesterday" says nothing about freshness. created_at is stored in
+  // Twitter's raw format ("Fri Jul 03 03:34:14 +0000 2026"), which SQLite can't parse but
+  // Date.parse can — hence JS, not SQL. Under a window, an unparseable/missing date is stale.
+  const cutoff = Date.now() - days * 86_400_000;
 
   // fragment filter applies to every lane — link-only / one-word replies aren't worth a slot,
   // EXCEPT quote tweets: "this." over a quoted tweet is real curation, the substance is the quote.
   const candidates = rows
     .map(r => ({ ...r, media: parseMedia(r.media), lane: "taste" as const, arm: null as Arm | null }))
+    .filter(r => days <= 0 || new Date(r.created_at ?? 0).getTime() > cutoff)
     .filter(r => r.quoted_id || tokenize(r.text).length >= 4);
 
   // M9: score = the weighted mix, z-scored over THIS candidate pool. An unscored rubric row is

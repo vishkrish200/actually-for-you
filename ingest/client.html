@@ -118,9 +118,9 @@
       <div class="sub" id="sub">ranked by your taste · not the algorithm</div>
     </div>
     <div class="tabs" id="tabs">
-      <button data-days="0" class="on" onclick="setRange(0)">All</button>
+      <button data-days="0" onclick="setRange(0)">All</button>
       <button data-days="7" onclick="setRange(7)">7 days</button>
-      <button data-days="2" onclick="setRange(2)">48h</button>
+      <button data-days="2" class="on" onclick="setRange(2)">48h</button>
       <button onclick="toggleReview()">Review ⚖</button>
     </div>
   </header>
@@ -130,7 +130,7 @@
 </div>
 <script>
 const TOKEN = '__AFY_TOKEN__'; // injected by server.ts at serve time — write auth for /review
-let days = 0;
+let days = 2; // default 48h AUTHORED window (matches the .on tab above) — "All" is the archive view
 
 // Avatar: a colored-initial circle (always renders instantly) with the real X profile photo layered
 // over it via unavatar, lazy-loaded so we never hammer (and rate-limit) unavatar with 50 at once.

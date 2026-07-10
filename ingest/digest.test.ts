@@ -54,6 +54,27 @@ describe("personalized digest (taste similarity)", () => {
     assert.equal(items[0]?.tweet_id, "C_ai", "AI candidate ranked first");
   });
 
+  it("days windows on AUTHORED age (created_at, Twitter raw format), not capture age", () => {
+    const db = seed();
+    // authored 2024, captured five minutes ago — the payload-stray/resurface shape. Twitter's raw
+    // created_at format on purpose: the filter must parse it (SQLite can't, Date.parse can).
+    db.prepare("INSERT INTO tweets (tweet_id,author_handle,author_name,text,created_at,captured_at) VALUES (?,?,?,?,?,?)")
+      .run("C_old", "w", "W", "an ancient llm agent reasoning tweet captured just now",
+        "Sat Feb 10 18:10:14 +0000 2024", new Date(Date.now() - 5 * 60_000).toISOString());
+    // fresh: authored an hour ago
+    db.prepare("INSERT INTO tweets (tweet_id,author_handle,author_name,text,created_at,captured_at) VALUES (?,?,?,?,?,?)")
+      .run("C_new", "v", "V", "a fresh llm agent reasoning tweet from this morning",
+        new Date(Date.now() - 3_600_000).toISOString(), new Date().toISOString());
+    db.exec("INSERT OR IGNORE INTO impressions (impression_id, tweet_id) SELECT tweet_id || '-imp', tweet_id FROM tweets");
+    const windowed = buildDigest(db, { limit: 10, days: 2, matchup: null });
+    assert.ok(windowed.find(i => i.tweet_id === "C_new"), "freshly-authored tweet inside the window");
+    assert.ok(!windowed.find(i => i.tweet_id === "C_old"), "2024 tweet excluded despite fresh capture");
+    assert.ok(!windowed.find(i => i.tweet_id === "C_ai"), "June-authored fixture outside a 48h window");
+    // limit 30 → exploreN 3 ≥ the below-mean candidates, so every row surfaces in SOME lane
+    const all = buildDigest(db, { limit: 30, days: 0, matchup: null });
+    assert.ok(all.find(i => i.tweet_id === "C_old"), "days=0 stays the unwindowed archive");
+  });
+
   it("a tweet liked AND bookmarked weighs its text ONCE in the profile (set semantics, not 2x)", () => {
     const a = seed();
     const b = seed();
