@@ -225,6 +225,12 @@ function tokenize(text: string): string[] {
     .filter(t => t.length > 2 && t.length < 30 && t !== "the" && t !== "and");
 }
 
+// Candidate-content rule shared with the recall replay. Quote tweets may carry their substance in
+// the quoted post, while plain fragments never earn a digest slot.
+export function isDigestContentCandidate(text: string, quotedId: string | null | undefined): boolean {
+  return Boolean(quotedId) || tokenize(text).length >= 4;
+}
+
 type Vec = Map<string, number>;
 
 function tfidf(text: string, idf: Map<string, number>): Vec {
@@ -325,14 +331,10 @@ function diversify(items: DigestItem[], lambda = 0.75, limit = 50): DigestItem[]
 // learn about what it never shows). Reviewed tweets leave the feed: a 👍/👎 (review mode or in-flow
 // on a digest card) is also a read receipt — the ranker doesn't learn from reviews, so a dropped
 // tweet would otherwise rank identically tomorrow and reappear.
-export function buildDigest(
-  db: DatabaseSync,
-  { limit = 50, days = 0, seed = new Date().toISOString().slice(0, 10), matchup = MATCHUP }:
-    { limit?: number; days?: number; seed?: string; matchup?: readonly [Arm, Arm] | null } = {},
-): DigestItem[] {
-  const m = buildTaste(db);
-  const prior = buildAuthorPrior(db);
-  const rubric = loadRubricScores(db); // latest sha; tolerates a never-scored db (empty map → z=0)
+// The candidate predicate is deliberately factored out because the recall probe needs the same
+// definition when it reconstructs an older digest run. `nowMs` is injected by the server so the
+// digest and its run ledger describe the exact same instant.
+function candidateRows(db: DatabaseSync, days: number, nowMs: number): any[] {
   const rows = db.prepare(`
     SELECT tweet_id, author_id, author_handle, author_name, text, media, quoted_id, created_at, likes, rts, replies, views FROM tweets
     WHERE text IS NOT NULL AND text != ''
@@ -345,14 +347,34 @@ export function buildDigest(
   // into the feed, so "captured yesterday" says nothing about freshness. created_at is stored in
   // Twitter's raw format ("Fri Jul 03 03:34:14 +0000 2026"), which SQLite can't parse but
   // Date.parse can — hence JS, not SQL. Under a window, an unparseable/missing date is stale.
-  const cutoff = Date.now() - days * 86_400_000;
+  const cutoff = nowMs - days * 86_400_000;
 
   // fragment filter applies to every lane — link-only / one-word replies aren't worth a slot,
   // EXCEPT quote tweets: "this." over a quoted tweet is real curation, the substance is the quote.
-  const candidates = rows
-    .map(r => ({ ...r, media: parseMedia(r.media), lane: "taste" as const, arm: null as Arm | null }))
+  return rows
     .filter(r => days <= 0 || new Date(r.created_at ?? 0).getTime() > cutoff)
-    .filter(r => r.quoted_id || tokenize(r.text).length >= 4);
+    .filter(r => isDigestContentCandidate(r.text, r.quoted_id));
+}
+
+// Count the pool before any scorer, MMR, explore sampling, or team draft. This is the compact
+// candidate-stage ledger: one number per digest build, rather than a row per candidate per reload.
+export function candidateCount(
+  db: DatabaseSync,
+  { days = 0, nowMs = Date.now() }: { days?: number; nowMs?: number } = {},
+): number {
+  return candidateRows(db, days, nowMs).length;
+}
+
+export function buildDigest(
+  db: DatabaseSync,
+  { limit = 50, days = 0, seed = new Date().toISOString().slice(0, 10), matchup = MATCHUP, nowMs = Date.now() }:
+    { limit?: number; days?: number; seed?: string; matchup?: readonly [Arm, Arm] | null; nowMs?: number } = {},
+): DigestItem[] {
+  const m = buildTaste(db);
+  const prior = buildAuthorPrior(db);
+  const rubric = loadRubricScores(db); // latest sha; tolerates a never-scored db (empty map → z=0)
+  const candidates = candidateRows(db, days, nowMs)
+    .map(r => ({ ...r, media: parseMedia(r.media), lane: "taste" as const, arm: null as Arm | null }));
 
   // M9: score = the weighted mix, z-scored over THIS candidate pool. An unscored rubric row is
   // null → z=0 (pool-neutral); an unknown author gets prior 0 (a real value — most of the pool).

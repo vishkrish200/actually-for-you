@@ -228,6 +228,7 @@ describe("M10 digest telemetry", () => {
       tweets: [{ ...tweet, tweet_id: "m10-c", text: "telemetry candidate tweet with plenty of tokens" }],
       impressions: [{ ...impression, impression_id: "imp-m10-c", tweet_id: "m10-c" }],
     });
+    const beforeRuns = (db.prepare("SELECT COALESCE(MAX(rowid),0) n FROM digest_runs").get() as any).n;
     const { status, json } = await req("GET", "/digest?limit=10");
     assert.equal(status, 200);
     assert.ok(json.items.length >= 1, "digest served at least one card");
@@ -240,6 +241,12 @@ describe("M10 digest telemetry", () => {
     assert.equal(rows[0].digest_date, new Date().toISOString().slice(0, 10));
     // mix parts captured at serve time — the not-reconstructable-later half of the log
     assert.deepEqual(Object.keys(JSON.parse(rows[0].parts)).sort(), ["author", "rubric", "taste"]);
+    const runs = db.prepare("SELECT channel, days, limit_n, candidate_count, ts FROM digest_runs WHERE rowid > ?").all(beforeRuns) as any[];
+    assert.equal(runs.length, 1, "one compact candidate-stage ledger row per digest build");
+    assert.deepEqual({ ...runs[0], ts: Boolean(runs[0].ts) }, {
+      channel: "web", days: 0, limit_n: 10, candidate_count: runs[0].candidate_count, ts: true,
+    });
+    assert.ok(runs[0].candidate_count >= json.items.length, "pool count is pre-selection, so it covers the served slate");
   });
 
   it("?channel=imessage (daily.ts teaser) logs under its real channel", async () => {

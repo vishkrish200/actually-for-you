@@ -2,7 +2,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { buildDigest, attachQuoted, parseMedia } from "./digest.ts";
+import { buildDigest, candidateCount, attachQuoted, parseMedia } from "./digest.ts";
 
 const PORT = 2727;
 const DB_PATH = process.env.AFY_DB ?? "afy.db";
@@ -90,6 +90,13 @@ db.exec(`
     rowid INTEGER PRIMARY KEY AUTOINCREMENT,
     tweet_id TEXT, ts TEXT
   );
+  -- Candidate-stage ledger. One row per digest build records the exact run instant and the size of
+  -- its eligible pool; recall.ts replays eligibility from append-only raw timestamps, avoiding a
+  -- prohibitively large candidate×reload event table.
+  CREATE TABLE IF NOT EXISTS digest_runs (
+    rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+    digest_date TEXT, channel TEXT, days INTEGER, limit_n INTEGER, candidate_count INTEGER, ts TEXT
+  );
 `);
 
 // Additive migrations for DBs created before these columns existed (append-only safe).
@@ -153,21 +160,27 @@ const stmts = {
   digestOpen: db.prepare(
     `INSERT INTO digest_opens (tweet_id, ts) VALUES (?,?)`
   ),
+  digestRun: db.prepare(
+    `INSERT INTO digest_runs (digest_date, channel, days, limit_n, candidate_count, ts) VALUES (?,?,?,?,?,?)`
+  ),
 };
 
 // M10: append the served slate. Telemetry must never take down the product — a logging failure
 // is loud but the digest still serves. Every serve logs (page reloads included); funnel.ts
 // dedupes to first-serve per tweet at analysis time, append-only stays simple here.
-function logServes(items: { tweet_id: string; lane: string; score: number; parts: unknown; arm?: string | null }[], channel: "web" | "imessage") {
-  const ts = new Date().toISOString();
+function logDigest(
+  items: { tweet_id: string; lane: string; score: number; parts: unknown; arm?: string | null }[],
+  { channel, days, limit, candidateCount, ts }: { channel: "web" | "imessage"; days: number; limit: number; candidateCount: number; ts: string },
+) {
   db.prepare("BEGIN").run();
   try {
+    stmts.digestRun.run(ts.slice(0, 10), channel, days, limit, candidateCount, ts);
     items.forEach((it, i) =>
       stmts.digestLog.run(ts.slice(0, 10), channel, it.tweet_id, i + 1, it.lane, it.score, JSON.stringify(it.parts), ts, it.arm ?? null));
     db.prepare("COMMIT").run();
   } catch (e) {
     db.prepare("ROLLBACK").run();
-    console.error("[afy-ingest] digest_log write failed (serve continues):", e);
+    console.error("[afy-ingest] digest telemetry write failed (serve continues):", e);
   }
 }
 
@@ -495,8 +508,10 @@ export const server = http.createServer(async (req, res) => {
     // daily.ts tags its teaser fetch ?channel=imessage — that one-card serve IS the iMessage
     // send list, so it logs under its real channel. Everything else is the web client.
     const channel = url.searchParams.get("channel") === "imessage" ? "imessage" : "web";
-    const items = buildDigest(db, { limit, days });
-    logServes(items, channel);
+    const now = new Date();
+    const nowMs = now.getTime();
+    const items = buildDigest(db, { limit, days, nowMs });
+    logDigest(items, { channel, days, limit, candidateCount: candidateCount(db, { days, nowMs }), ts: now.toISOString() });
     const profileSize = (db.prepare(`
       SELECT COUNT(DISTINCT e.tweet_id) AS n FROM engagement_labels e JOIN tweets t ON e.tweet_id = t.tweet_id
       WHERE e.tweet_id NOT IN (SELECT tweet_id FROM label_prunes)

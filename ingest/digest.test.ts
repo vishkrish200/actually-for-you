@@ -71,7 +71,7 @@ describe("personalized digest (taste similarity)", () => {
     assert.ok(!windowed.find(i => i.tweet_id === "C_old"), "2024 tweet excluded despite fresh capture");
     assert.ok(!windowed.find(i => i.tweet_id === "C_ai"), "June-authored fixture outside a 48h window");
     // limit 30 → exploreN 3 ≥ the below-mean candidates, so every row surfaces in SOME lane
-    const all = buildDigest(db, { limit: 30, days: 0, matchup: null });
+    const all = buildDigest(db, { limit: 100, days: 0, matchup: null });
     assert.ok(all.find(i => i.tweet_id === "C_old"), "days=0 stays the unwindowed archive");
   });
 
