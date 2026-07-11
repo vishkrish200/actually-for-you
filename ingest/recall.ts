@@ -92,10 +92,10 @@ const median = (xs: number[]) => {
 
 export function recall(db: DatabaseSync, days: number, nowMs: number = Date.now()): RecallReport {
   const cutoff = new Date(nowMs - days * DAY_MS).toISOString();
-  const noDigestRuns = !has(db, "digest_runs");
+  const noDigestRunTable = !has(db, "digest_runs");
   const base: RecallReport = {
     days, cutoff, likes: 0, bookmarks: 0, total: 0, captured: 0, notCaptured: 0,
-    loggedRuns: 0, noDigestRuns, available: 0, served: 0, missed: 0, notAvailable: 0,
+    loggedRuns: 0, noDigestRuns: noDigestRunTable, available: 0, served: 0, missed: 0, notAvailable: 0,
     medianTimeToFirstServeMs: null, missedList: [],
   };
   if (!has(db, "engagement_labels"))
@@ -130,9 +130,12 @@ export function recall(db: DatabaseSync, days: number, nowMs: number = Date.now(
       (SELECT MIN(e.ts) FROM engagement_labels e WHERE e.tweet_id = recent.tweet_id) AS first_ts,
       ${tweetCols}, ${impressionsExpr} AS first_impression_ts, ${reviewsExpr} AS first_review_ts
   FROM recent ${tweetsJoin} ORDER BY recent.last_ts DESC`).all(cutoff) as EngagementRow[];
-  const runs = noDigestRuns ? [] : db.prepare(
+  const runs = noDigestRunTable ? [] : db.prepare(
     "SELECT ts, days FROM digest_runs ORDER BY ts ASC",
   ).all() as Run[];
+  // A fresh server has created the table but has not served a digest yet. Mark the report the same
+  // way as a pre-ledger database so the CLI calls these rows unmeasured, not ranker misses.
+  const noDigestRuns = runs.length === 0;
   const hasDigestLog = has(db, "digest_log");
 
   let captured = 0, notCaptured = 0, available = 0, served = 0, missed = 0, notAvailable = 0;
@@ -161,7 +164,7 @@ export function recall(db: DatabaseSync, days: number, nowMs: number = Date.now(
 
   return {
     ...base, likes: Number(counts.likes ?? 0), bookmarks: Number(counts.bookmarks ?? 0), total,
-    captured, notCaptured, loggedRuns: runs.length, available, served, missed, notAvailable,
+    captured, notCaptured, loggedRuns: runs.length, noDigestRuns, available, served, missed, notAvailable,
     medianTimeToFirstServeMs: median(waits), missedList,
   };
 }
@@ -187,15 +190,20 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   console.log(`  volume:        ${r.likes} like(s) + ${r.bookmarks} bookmark(s) over ${r.total} distinct tweet(s)`);
   console.log(`  captured:      ${r.captured}/${r.total} (${rate(r.captured, r.total)}) — usable text stored before analysis`);
   console.log(`  digest builds: ${r.loggedRuns}${r.noDigestRuns ? " — ledger starts with the next /digest serve" : ""}`);
-  console.log(`  available:     ${r.available}/${r.captured} (${rate(r.available, r.captured)}) — eligible in a completed build before observed engagement`);
-  console.log(`  served:        ${r.served}/${r.available} (${rate(r.served, r.available)}) — selected before observed engagement`);
-  console.log(`  MISSED:        ${r.missed} eligible-but-never-selected before engagement`);
-  console.log(`  not available: ${r.notAvailable} captured tweets had no prior eligible digest opportunity`);
-  console.log(`  not captured:  ${r.notCaptured} — no usable tweet text in the pipeline`);
-  console.log(`  median wait:   ${fmtDuration(r.medianTimeToFirstServeMs)} from first eligible build to first serve`);
-  if (r.missedList.length) {
-    console.log("\n  most-recent selection misses (up to 10):");
-    for (const m of r.missedList) console.log(`    ${m.tweet_id}  eligible ${m.first_eligible_ts}  ${m.snippet}`);
+  if (r.noDigestRuns) {
+    console.log(`  causal recall: unavailable for ${r.captured} captured tweets — no completed digest build was recorded before this ledger.`);
+    console.log(`  not captured:  ${r.notCaptured} — no usable tweet text in the pipeline`);
+  } else {
+    console.log(`  available:     ${r.available}/${r.captured} (${rate(r.available, r.captured)}) — eligible in a completed build before observed engagement`);
+    console.log(`  served:        ${r.served}/${r.available} (${rate(r.served, r.available)}) — selected before observed engagement`);
+    console.log(`  MISSED:        ${r.missed} eligible-but-never-selected before engagement`);
+    console.log(`  not available: ${r.notAvailable} captured tweets had no prior eligible digest opportunity`);
+    console.log(`  not captured:  ${r.notCaptured} — no usable tweet text in the pipeline`);
+    console.log(`  median wait:   ${fmtDuration(r.medianTimeToFirstServeMs)} from first eligible build to first serve`);
+    if (r.missedList.length) {
+      console.log("\n  most-recent selection misses (up to 10):");
+      for (const m of r.missedList) console.log(`    ${m.tweet_id}  eligible ${m.first_eligible_ts}  ${m.snippet}`);
+    }
   }
   console.log("\n  note: this is a lower-bound recall probe. Organic engagements are already conditioned on what X surfaced, and their timestamps are when this sensor observed them, not X's private action times.\n");
 }

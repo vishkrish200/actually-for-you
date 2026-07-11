@@ -95,6 +95,15 @@ describe("candidate-stage recall", () => {
     assert.equal(r.notAvailable, 4);
   });
 
+  it("a fresh but empty ledger says no causal data yet", () => {
+    const db = seed();
+    db.exec("DELETE FROM digest_runs");
+    const r = recall(db, 7, NOW);
+    assert.equal(r.loggedRuns, 0);
+    assert.equal(r.noDigestRuns, true);
+    assert.equal(r.missed, 0);
+  });
+
   it("empty window and missing labels remain harmless", () => {
     assert.ok(recall(seed(), 1, Date.parse("2026-08-01T00:00:00Z")).emptyReason);
     const r = recall(new DatabaseSync(":memory:"), 7, NOW);
