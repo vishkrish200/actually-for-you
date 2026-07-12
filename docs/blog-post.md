@@ -12,6 +12,8 @@ re-ranks the same tweets by my *revealed* taste. Every morning at 8am it texts m
 Every digest secretly runs a blind A/B between two rankers. Single-user by design: no accounts,
 no cloud, nothing leaves my laptop.
 
+![The morning digest reader — cards re-ranked by taste, each with a ✦ score and in-flow Keep/Drop votes](reader.png)
+
 The ranker turned out to be the easy part. The story worth telling is the eval stack — the gate
 that told me not to ship my first model, and the later, stranger discovery that the gate itself
 had become the wrong instrument. Both below.
@@ -143,10 +145,33 @@ difference that excludes zero; a CI straddling zero is a TIE, not a win. Two adv
 alongside the gate: the keyword-tied pairs (value the baseline is structurally blind to) and the
 explore-audit pool (serve-bias-free).
 
-Same votes, honest ruler: the LLM rubric orders my preferences at **0.71 AUC vs keyword's
-0.63**, the blend at 0.70 — both CIs excluding zero. The weeks of "tie" were the ruler's fault.
-And the reason I trust that claim is that it's the same move as the capture bug: don't argue
-with the number, instrument the instrument, then look.
+Same votes, honest ruler: on the rebuild-day read, the LLM rubric separated from keyword at
+**0.71 AUC vs 0.63**, CI excluding zero. The weeks of "tie" were the ruler's fault. And the
+reason I trust that claim is that it's the same move as the capture bug: don't argue with the
+number, instrument the instrument, then look.
+
+The arms keep shuffling as votes accumulate — here's the gate as of this write-up, where the
+shipped blend is the one clearing it and the rubric arm hovers just short, its coverage printed
+right beside it so a starved judge can't pose as a confident one:
+
+```
+▼ REVIEW-ONLY (hand-signed 👍 vs 👎) — NON-CIRCULAR SHIP GATE  (233 👍 × 358 👎 = 83,414 pairs)
+model                            AUC  AUC 95% CI         Δ vs keyword CI      AUC(kw-tied)
+random                        0.4995  [0.450, 0.546]     [-0.194, -0.064] *         0.4865
+char_len                      0.6796  [0.636, 0.722]     [+0.006, +0.098] *         0.6785
+keyword (baseline to beat)    0.6282  [0.584, 0.673]                                0.5000
+rubric (LLM judge)            0.6784  [0.635, 0.723]     [-0.006, +0.107]           0.6975
+taste (digest cosine)         0.6540  [0.608, 0.698]     [-0.035, +0.086]           0.6672
+mix (M9 digest blend)         0.6959  [0.653, 0.737]     [+0.011, +0.123] *         0.6990
+rubric coverage: 483/591 review-pool tweets scored (sha 95de0c…)
+
+SHIP ✅  mix (M9 digest blend) beats keyword on the NON-CIRCULAR review gate
+```
+
+That's the property the rebuild bought: the ruler *separates* rankers now. The old one
+flattened everything into a tie and called it rigor. (Note `char_len` beating keyword — even
+tweet-length outranks a keyword counter on my votes, which is why length is a confounder
+control in every model here and keyword is a baseline to beat, never a champion.)
 
 One more calibration loop fell out of the rebuild: the eval tracks a per-version **judge
 calibration** table — for each hash of `RUBRIC.md`, how well did the LLM's grades agree with my
@@ -162,16 +187,29 @@ An offline gate can tell you a ranker is *not worse*. It can't tell you which fe
 live with. The deciding eval runs on the live product: **blind team-draft interleaving**.
 
 Two rankers secretly split every digest slate — a deterministic seeded draft, pixel-identical
-UI, the drafting arm logged per card. Nothing in the reader reveals which ranker picked what.
+UI, the drafting arm logged per card. Nothing in the reader reveals which ranker picked what:
+
+![A digest card — the Keep/Drop buttons feed the eval's gold labels; nothing shows which arm drafted it](card.png)
 Credit is a net judgment: opens + 👍 − 👎, and yes it goes negative — downvotes are ~60% of my
 judgments, and a ranker that serves confident junk should bleed for it. Verdicts come from a
 day-paired bootstrap CI, and the report *refuses* to print a lean until enough judged events
-accumulate — a starved A/B that announces winners is worse than none.
+accumulate — a starved A/B that announces winners is worse than none. The current matchup, in
+the report's own words:
 
-Around the interleave sit two daily instruments: a **scorecard** (junk@10 per digest day — the
-day the rubric scores landed, junk@10 dropped from 73% to 13%) and a **recall probe** (organic
-likes the digest never served me first — the system's only detector for what it *misses* rather
-than what it mis-ranks).
+```
+interleave — 255 arm-attributed serves, 36 judged events (opens + votes), matchup keyword vs mix
+
+TIED at n=36 judged events — the (keyword − mix) credit-rate CI [-0.077, 0.047] contains 0.
+No ranker leads yet; keep serving.
+```
+
+An A/B report that says "keep serving" instead of inventing a winner is, as far as I'm
+concerned, the best artifact this project has produced.
+
+Around the interleave sit two daily instruments: a **scorecard** (junk@10 per digest day —
+72.7% on the digest's first day, 0% for the last three as votes and rubric scores fed back) and
+a **recall probe** (organic likes the digest never served me first — the system's only detector
+for what it *misses* rather than what it mis-ranks).
 
 So the full grading loop, bottom to top: hand votes are the only gold; the offline AUC gate is
 the guardrail that keeps obviously-worse rankers out; the interleave is the verdict-maker where

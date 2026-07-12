@@ -32,16 +32,24 @@ labels, honest evals) don't need it.
 
 ## Architecture
 
-```
- x.com ──────────► Chrome extension (MV3) ─────────► local ingest server ──► SQLite
-  scroll/read       · GraphQL network hook             (Node, node:sqlite,     (append-only
-  + a 30-min        · dwell state machine               zero deps)              raw events)
-  poller tab        · IndexedDB durable queue                   │
-                                                                ▼
-                labels ───► mix ranker ───► interleaved digest ───► 8am iMessage
-             (re-derived    taste + LLM rubric    two arms blind-split     (launchd)
-              from raw)     + author prior;       each slate; serves,
-                            ~10% explore, MMR     opens, votes logged
+```mermaid
+flowchart TB
+    X["x.com timeline<br/>scroll + a 30-min poller tab"] --> EXT["Chrome extension (MV3)<br/>GraphQL hook · dwell machine · IndexedDB queue"]
+    EXT --> ING["Ingest server :2727<br/>Node + node:sqlite, zero deps · append-only events"]
+    ING --> LBL["Labels<br/>re-derived from raw, never mutated"]
+    LBL --> RANK["Mix ranker<br/>0.5·taste + 0.3·rubric + 0.2·author<br/>~10% explore lane · MMR"]
+    RANK --> DIG["Daily digest<br/>blind two-arm interleave, serves logged per card"]
+    DIG --> MSG["8am iMessage (launchd)"]
+    subgraph EVAL["Eval stack — hand votes are the only gold labels"]
+        GATE["offline AUC pair gate"]
+        IL["online interleave verdict"]
+        JC["judge calibration"]
+        SC["scorecard"]
+        RC["recall probe"]
+    end
+    MSG --> V["👍/👎 votes + opens"]
+    V --> EVAL
+    EVAL -. ship gate .-> RANK
 ```
 
 ### The sensor (`extension/`)
@@ -77,6 +85,12 @@ eval data.
 
 ## Ranking signals
 
+![A digest card: rank, ✦ score badge, engagement stats, and the Keep/Drop votes that mint the eval's gold labels](docs/card.png)
+
+_Anatomy of a card: the **✦ score** top-right is the blend below; **Keep / Drop** are the
+hand-signed votes that become the eval's only gold labels. Nothing on the card reveals which
+interleave arm drafted it._
+
 The digest score is a named-knob blend — `0.5·z(taste) + 0.3·z(rubric) + 0.2·z(author)`,
 z-scores winsorized at ±2:
 
@@ -99,25 +113,93 @@ over *every* hand-signed vote pair, no balancing, no split — reviews are 100% 
 trains on them. A candidate ranker clears only by beating the keyword baseline with a paired
 item-bootstrap CI on the (arm − keyword) difference that excludes zero; a CI straddling zero is
 a TIE, not a win. Two advisory cuts print alongside: keyword-tied pairs (where the baseline is
-structurally blind — 27% of all pairs) and the ✧ explore-audit pool (serve-bias-free). Current
-reading on 465 votes at full rubric coverage: **rubric 0.71 and mix 0.70 vs keyword's 0.63, both
-CIs excluding zero**.
+structurally blind — 25% of all pairs) and the ✧ explore-audit pool (serve-bias-free). The gate
+as of this write-up (output trimmed):
+
+```
+▼ REVIEW-ONLY (hand-signed 👍 vs 👎) — NON-CIRCULAR SHIP GATE  (233 👍 × 358 👎 = 83,414 pairs)
+model                            AUC  AUC 95% CI         Δ vs keyword CI      AUC(kw-tied)
+random                        0.4995  [0.450, 0.546]     [-0.194, -0.064] *         0.4865
+recency                       0.5692  [0.522, 0.614]     [-0.124, +0.003]           0.5552
+char_len                      0.6796  [0.636, 0.722]     [+0.006, +0.098] *         0.6785
+keyword (baseline to beat)    0.6282  [0.584, 0.673]                                0.5000
+rubric (LLM judge)            0.6784  [0.635, 0.723]     [-0.006, +0.107]           0.6975
+taste (digest cosine)         0.6540  [0.608, 0.698]     [-0.035, +0.086]           0.6672
+mix (M9 digest blend)         0.6959  [0.653, 0.737]     [+0.011, +0.123] *         0.6990
+rubric coverage: 483/591 review-pool tweets scored (sha 95de0c…)
+
+SHIP ✅  mix (M9 digest blend) beats keyword on the NON-CIRCULAR review gate
+   (all-pairs AUC AND a diff CI excluding 0) at 233 👍 / 358 👎.
+```
+
+How to read it: the shipped blend clears the gate; the rubric arm hovers just short *with its
+coverage printed beside it* (483/591 — a starved judge can't masquerade as a confident one);
+and even tweet-*length* beats the keyword counter on these votes — which is exactly why
+`char_len` is a confounder control in every model and keyword is a baseline to beat, not a
+champion.
 
 **Online interleave** (`npm run interleave`) — the verdict-maker. Two rankers team-draft every
 digest slate (deterministic seeded draft, pixel-identical UI, drafting arm logged per card).
 Credit is a net judgment — opens + 👍 − 👎, negatives count — verdicts come from a day-paired
 bootstrap CI, and the report *refuses* to print a lean below a judged-event floor. The offline
-gate is a guardrail; this is where rankers earn their keep. A matchup is always running.
+gate is a guardrail; this is where rankers earn their keep. A matchup is always running:
+
+```
+interleave — 255 arm-attributed serves, 36 judged events (opens + votes), matchup keyword vs mix
+
+arm       served  opened  up  down  credits  credit_rate
+keyword   114     5       7   3     9        0.079
+mix       141     4       14  3     15       0.106
+
+TIED at n=36 judged events — the (keyword − mix) credit-rate CI [-0.077, 0.047] contains 0.
+No ranker leads yet; keep serving.
+```
+
+A report that prints TIED and says "keep serving" instead of manufacturing a winner is the
+point of the whole apparatus.
 
 **Judge calibration** (per-`rubric_sha` table in the eval) — did editing my rubric actually move
-the LLM toward my votes? Generic rubric 0.69 AUC → personalized 0.72. Observe-only by doctrine:
-the rubric is never iterated against this table.
+the LLM toward my votes? Rewriting `RUBRIC.md` from generic quality to my actual taste moved
+agreement from 0.687 to 0.724:
 
-**Scorecard** (`npm run scorecard`) — per-digest-day product pulse: junk@10/@20, hits, opens,
-explore-vs-core votes.
+```
+sha         coverage  mean👍 mean👎  rubric-vs-votes AUC
+dd6304a7     379/591    4.88   3.53               0.6870
+8ff3d8ea     421/591    4.33   2.54               0.7235
+95de0c7e     483/591    4.19   2.78               0.7073
+⚠ do NOT iterate RUBRIC.md against this table — a rubric edit must come from lived digest
+  experience, not from chasing this AUC (that would be tuning against the gate).
+```
+
+That warning ships in the report itself. Observe-only by doctrine: the moment the rubric is
+tuned against this table, the judge stops being independent of the gate.
+
+**Scorecard** (`npm run scorecard`) — per-digest-day product pulse. Junk@10 was 72.7% on the
+digest's first day; it read 0% for the last three (output trimmed):
+
+```
+date        served  up  down  junk@10         junk@20          opens
+2026-07-06  53      7   23    72.7% (8/11)    72.7% (16/22)    5
+2026-07-07  91      11  5     25.0% (4/16)    13.8% (4/29)     3
+2026-07-09  24      1   2     11.1% (1/9)     11.8% (2/17)     0
+2026-07-10  60      6   0     0.0% (0/6)      0.0% (0/19)      1
+2026-07-11  72      1   1     0.0% (0/8)      5.0% (1/20)      4
+2026-07-12  33      0   1     0.0% (0/5)      0.0% (0/9)       0
+TOTAL       368     26  32    22.0% (13/59)   18.1% (23/127)   13
+```
 
 **Recall probe** (`npm run recall`) — the miss detector: organic engagements the digest never
-served me first.
+served me first, with capture and availability accounted separately so a miss can be blamed on
+the right stage:
+
+```
+recall — organic engagements in the last 7d
+  volume:        0 like(s) + 23 bookmark(s) over 23 distinct tweet(s)
+  captured:      23/23 (100%) — usable text stored before analysis
+  available:     0/23 (0%) — eligible in a completed build before observed engagement
+  MISSED:        0 eligible-but-never-selected before engagement
+  not captured:  0 — no usable tweet text in the pipeline
+```
 
 The circularity rules are the spine of all of it: hand-signed 👍/👎 are the *only* gold labels;
 the keyword lexicon and the LLM's scores may **rank** but may never **label**; nothing ever
@@ -203,6 +285,6 @@ without it).
 
 Thirteen milestones: capture → ingest → read loop → labels → the learned-ranker HOLD → daily
 delivery → background poller → LLM rubric → weighted mix → serve telemetry → online
-interleaving → the eval rebuild. ~47k tweets, ~66k impressions, and 465 hand-signed votes so
+interleaving → the eval rebuild. ~63k tweets, ~88k impressions, and ~600 hand-signed votes so
 far. The full build log is [`PROGRESS.md`](./PROGRESS.md); the spec is [`PRD.md`](./PRD.md);
 the longer story is [the blog post](./docs/blog-post.md).
