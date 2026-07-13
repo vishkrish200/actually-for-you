@@ -40,8 +40,6 @@ back. What I read today is tomorrow's eval data.
 
 ## Ranking signals
 
-![A digest card: rank, ✦ score, engagement stats, Keep/Drop votes](docs/card.png)
-
 Score = `0.5·z(taste) + 0.3·z(rubric) + 0.2·z(author)`, winsorized at ±2:
 
 | Signal | What it is | Guardrail |
