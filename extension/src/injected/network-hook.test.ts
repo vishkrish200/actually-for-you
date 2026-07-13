@@ -29,7 +29,10 @@ function walk(node: unknown, out: TweetRecord[]): void {
       tweet_id: String(t.rest_id),
       author_handle: String(userCore?.screen_name ?? userLegacy?.screen_name ?? ""),
       author_name: String(userCore?.name ?? userLegacy?.name ?? ""),
-      text: String(legacy.full_text ?? legacy.text ?? ""),
+      text: String(
+        (((t.note_tweet as Record<string, unknown>)?.note_tweet_results as Record<string, unknown>)
+          ?.result as Record<string, unknown>)?.text
+        ?? legacy.full_text ?? legacy.text ?? ""),
       metrics: {
         likes: Number(legacy.favorite_count ?? 0),
         rts: Number(legacy.retweet_count ?? 0),
@@ -127,6 +130,26 @@ describe("tweet extractor", () => {
     expect(out[0].tweet_id).toBe("999888");
     expect(out[0].author_handle).toBe("wrapped_user");
     expect(out[0].text).toBe("visibility-wrapped tweet");
+  });
+
+  it("prefers note_tweet full text over the truncated legacy.full_text (long-form tweets)", () => {
+    const longform = {
+      data: { home: { home_timeline_urt: { instructions: [{ type: "TimelineAddEntries", entries: [{
+        content: { itemContent: { tweet_results: { result: {
+          __typename: "Tweet",
+          rest_id: "2076447816331960693",
+          note_tweet: { note_tweet_results: { result: {
+            text: "playing with local AI models — the FULL long-form text, well past the 280-char legacy cut",
+          } } },
+          legacy: { full_text: "playing with local AI models — the FULL long-form…", favorite_count: 93, retweet_count: 12, reply_count: 19 },
+          core: { user_results: { result: { rest_id: "u2", core: { screen_name: "andrewchen", name: "andrew chen" }, legacy: {} } } },
+        } } } },
+      }] }] } } },
+    };
+    const out: TweetRecord[] = [];
+    walk(longform, out);
+    expect(out).toHaveLength(1);
+    expect(out[0].text).toBe("playing with local AI models — the FULL long-form text, well past the 280-char legacy cut");
   });
 
   it("does NOT misparse a User object as a tweet (no legacy.full_text)", () => {

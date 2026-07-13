@@ -81,13 +81,19 @@ function parseTweetResult(result: Record<string, unknown>): TweetRecord | null {
   // schema). Read avatar first, legacy fallback. This is X's own pbs.twimg.com CDN — no rate limit.
   const userAvatar = userResult?.avatar as Record<string, unknown> | undefined;
 
+  // Long-form ("note") tweets: legacy.full_text is truncated at ~280 chars; the complete text
+  // lives at result.note_tweet.note_tweet_results.result.text (sibling of legacy). Prefer it.
+  const noteText = (((result.note_tweet as Record<string, unknown>)
+    ?.note_tweet_results as Record<string, unknown>)
+    ?.result as Record<string, unknown>)?.text;
+
   return {
     tweet_id,
     author_handle: String(userCore?.screen_name ?? userLegacy?.screen_name ?? ""),
     author_name: String(userCore?.name ?? userLegacy?.name ?? ""),
     author_avatar: String(userAvatar?.image_url ?? userLegacy?.profile_image_url_https ?? ""),
     author_id: String(userResult?.rest_id ?? ""),
-    text: String(legacy.full_text ?? legacy.text ?? ""),
+    text: String(noteText ?? legacy.full_text ?? legacy.text ?? ""),
     media: mediaItems.map(m => ({
       type: String(m.type) as "photo" | "video" | "gif",
       url: String(m.media_url_https ?? m.media_url ?? ""),
