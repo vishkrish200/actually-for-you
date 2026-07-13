@@ -231,6 +231,15 @@ export function isDigestContentCandidate(text: string, quotedId: string | null |
   return Boolean(quotedId) || tokenize(text).length >= 4;
 }
 
+// Format policy (user directive 2026-07-13): the feed leans originals + quote tweets; replies
+// ("comments") earn a slot ONLY from authors with a high like prior. A HARD candidate filter,
+// never a reward feature — it can't enter the mix, so no confounder/circularity concern.
+// Reply detection: GraphQL full_text keeps the leading @mention on replies.
+// ponytail: leading-@ heuristic; DOM-captured replies lose that prefix and slip through (~7% of
+// dom rows vs ~31% net) — capture in_reply_to_status_id in network-hook.ts if that ever matters.
+export const REPLY_MIN_AUTHOR_LIKES = 2; // "high like score" = ≥2 kept likes on that author
+export function isReply(text: string): boolean { return text.startsWith("@"); }
+
 type Vec = Map<string, number>;
 
 function tfidf(text: string, idf: Map<string, number>): Vec {
@@ -334,7 +343,7 @@ function diversify(items: DigestItem[], lambda = 0.75, limit = 50): DigestItem[]
 // The candidate predicate is deliberately factored out because the recall probe needs the same
 // definition when it reconstructs an older digest run. `nowMs` is injected by the server so the
 // digest and its run ledger describe the exact same instant.
-function candidateRows(db: DatabaseSync, days: number, nowMs: number): any[] {
+function candidateRows(db: DatabaseSync, days: number, nowMs: number, prior: Map<string, number>): any[] {
   const rows = db.prepare(`
     SELECT tweet_id, author_id, author_handle, author_name, text, media, quoted_id, created_at, likes, rts, replies, views FROM tweets
     WHERE text IS NOT NULL AND text != ''
@@ -353,7 +362,9 @@ function candidateRows(db: DatabaseSync, days: number, nowMs: number): any[] {
   // EXCEPT quote tweets: "this." over a quoted tweet is real curation, the substance is the quote.
   return rows
     .filter(r => days <= 0 || new Date(r.created_at ?? 0).getTime() > cutoff)
-    .filter(r => isDigestContentCandidate(r.text, r.quoted_id));
+    .filter(r => isDigestContentCandidate(r.text, r.quoted_id))
+    // format policy: replies only from high-like-prior authors (prior values are log1p(count))
+    .filter(r => !isReply(r.text) || (prior.get(r.author_id ?? "") ?? 0) >= Math.log1p(REPLY_MIN_AUTHOR_LIKES));
 }
 
 // Count the pool before any scorer, MMR, explore sampling, or team draft. This is the compact
@@ -362,7 +373,7 @@ export function candidateCount(
   db: DatabaseSync,
   { days = 0, nowMs = Date.now() }: { days?: number; nowMs?: number } = {},
 ): number {
-  return candidateRows(db, days, nowMs).length;
+  return candidateRows(db, days, nowMs, buildAuthorPrior(db)).length;
 }
 
 export function buildDigest(
@@ -373,7 +384,7 @@ export function buildDigest(
   const m = buildTaste(db);
   const prior = buildAuthorPrior(db);
   const rubric = loadRubricScores(db); // latest sha; tolerates a never-scored db (empty map → z=0)
-  const candidates = candidateRows(db, days, nowMs)
+  const candidates = candidateRows(db, days, nowMs, prior)
     .map(r => ({ ...r, media: parseMedia(r.media), lane: "taste" as const, arm: null as Arm | null }));
 
   // M9: score = the weighted mix, z-scored over THIS candidate pool. An unscored rubric row is

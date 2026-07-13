@@ -140,6 +140,27 @@ describe("personalized digest (taste similarity)", () => {
     assert.ok(!items.find(i => i.tweet_id === "F_short"), "short plain fragment still dropped");
   });
 
+  it("format policy: replies dropped unless the author has a high like prior; originals+quotes stay", () => {
+    const db = seed();
+    const t = db.prepare("INSERT INTO tweets (tweet_id,author_id,author_handle,author_name,text,media,quoted_id,created_at,captured_at) VALUES (?,?,?,?,?,?,?,?,?)");
+    // trusted author: 2 kept likes (= REPLY_MIN_AUTHOR_LIKES) → their reply earns a slot
+    t.run("T1", "auth_hi", "hi", "Hi", "llm agents planning with reasoning models", "[]", null, "2026-01-01", "2026-01-01");
+    t.run("T2", "auth_hi", "hi", "Hi", "reinforcement learning for llm agent tools", "[]", null, "2026-01-02", "2026-01-02");
+    const lab = db.prepare("INSERT INTO engagement_labels VALUES (?,?,?)");
+    lab.run("T1", "like", "2026-01-01"); lab.run("T2", "like", "2026-01-02");
+    t.run("R_hi", "auth_hi", "hi", "Hi", "@someone llm agents reasoning models are the answer", "[]", null, "2026-06-01", "2026-06-01");
+    // cold author (zero likes) → reply filtered out, but their ORIGINAL and QUOTE tweets stay
+    t.run("R_cold", "auth_cold", "cold", "Cold", "@someone llm agents reasoning models are the answer", "[]", null, "2026-06-01", "2026-06-01");
+    t.run("O_cold", "auth_cold", "cold", "Cold", "original take on llm agents and reasoning models", "[]", null, "2026-06-01", "2026-06-01");
+    t.run("Q_cold", "auth_cold", "cold", "Cold", "this llm take", "[]", "O_cold", "2026-06-01", "2026-06-01");
+    db.exec("INSERT OR IGNORE INTO impressions (impression_id, tweet_id) SELECT tweet_id || '-imp', tweet_id FROM tweets");
+    const items = buildDigest(db, { limit: 30, matchup: null }); // exploreN 3 → sub-mean rows still surface
+    assert.ok(items.find(i => i.tweet_id === "R_hi"), "reply from high-like-prior author kept");
+    assert.ok(!items.find(i => i.tweet_id === "R_cold"), "reply from cold author excluded from every lane");
+    assert.ok(items.find(i => i.tweet_id === "O_cold"), "cold author's original still eligible");
+    assert.ok(items.find(i => i.tweet_id === "Q_cold"), "cold author's quote tweet still eligible");
+  });
+
   it("explore lane: surfaces items the taste ranker would never pick, deterministically per seed", () => {
     // C_fin has zero token overlap with the likes, so the mix ranks it below the pool mean and only
     // explore can surface it. limit 20 → exploreN 2 covers both sub-mean candidates (C_off, C_fin),
