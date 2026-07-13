@@ -4,69 +4,101 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>actually for you</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✦</text></svg>">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400..700;1,6..72,400..700&display=swap" rel="stylesheet">
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   :root {
-    --bg: #000; --surface: #16181c; --border: #2f3336;
-    --text: #e7e9ea; --muted: #71767b; --accent: #1d9bf0;
-    --like: #f91880; --rt: #00ba7c;
+    /* warm gray family, one amber accent — no pure black, no twitter blue */
+    --bg: #131110; --surface: #1b1815; --surface-2: #211d19;
+    --border: #2b2620; --hairline: #241f1b;
+    --text: #ece7df; --muted: #93887a; --faint: #6b6156;
+    --accent: #d9a05b; --accent-dim: rgba(217,160,91,0.14);
+    --keep: #86b585; --drop: #cf7d76;
     font-size: 15px;
   }
+  ::selection { background: var(--accent-dim); }
+  html { scrollbar-color: var(--border) transparent; }
   body { background: var(--bg); color: var(--text);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
-  #app { max-width: 600px; margin: 0 auto; border-left: 1px solid var(--border); border-right: 1px solid var(--border); min-height: 100vh; }
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    /* faint radial warmth at the top so the page isn't a flat slab */
+    background-image: radial-gradient(1100px 420px at 50% -160px, rgba(217,160,91,0.055), transparent 70%); }
+  .serif { font-family: "Newsreader", Georgia, "Times New Roman", serif; }
+  #app { max-width: 620px; margin: 0 auto; min-height: 100dvh; padding: 0 4px; }
+  button { font-family: inherit; }
+  button:focus-visible, a:focus-visible, .tweet:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 
-  header { position: sticky; top: 0; background: rgba(0,0,0,0.65); backdrop-filter: blur(12px);
-    border-bottom: 1px solid var(--border); z-index: 10; }
-  .htop { padding: 12px 16px 6px; }
-  .htop h1 { font-size: 20px; font-weight: 800; letter-spacing: -0.01em; }
-  .htop .sub { color: var(--muted); font-size: 13px; margin-top: 2px; }
-  .tabs { display: flex; }
-  .tabs button { flex: 1; background: none; border: 0; color: var(--muted); font-size: 14px; font-weight: 600;
-    padding: 14px 0 12px; cursor: pointer; position: relative; }
-  .tabs button:hover { background: rgba(231,233,234,0.03); color: var(--text); }
+  /* ── masthead ─────────────────────────────────────────── */
+  header { position: sticky; top: 0; z-index: 10;
+    background: color-mix(in srgb, var(--bg) 78%, transparent); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+    border-bottom: 1px solid var(--hairline); }
+  .htop { padding: 20px 16px 10px; }
+  .htop h1 { font-family: "Newsreader", Georgia, serif; font-weight: 500; font-style: italic;
+    font-size: 27px; letter-spacing: -0.015em; line-height: 1; }
+  .htop h1 .fy { color: var(--accent); }
+  .dateline { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; margin-top: 7px;
+    color: var(--muted); font-size: 12.5px; letter-spacing: 0.01em; }
+  .dateline .day { color: var(--text); font-weight: 600; white-space: nowrap; }
+  .dateline .dot { color: var(--faint); }
+  .tabs { display: flex; padding: 0 8px; }
+  .tabs button { background: none; border: 0; color: var(--muted); font-size: 13.5px; font-weight: 600;
+    padding: 11px 12px 13px; cursor: pointer; position: relative; transition: color .15s; }
+  .tabs button:hover { color: var(--text); }
   .tabs button.on { color: var(--text); }
-  .tabs button.on::after { content: ""; position: absolute; bottom: 0; left: 50%; transform: translateX(-50%);
-    width: 56px; height: 4px; border-radius: 2px; background: var(--accent); }
+  .tabs button.on::after { content: ""; position: absolute; bottom: -1px; left: 12px; right: 12px;
+    height: 2px; background: var(--accent); border-radius: 2px 2px 0 0; }
+  .tabs .spacer { flex: 1; }
+  .tabs .review-btn { color: var(--accent); }
+  .tabs .review-btn:hover { color: var(--accent); filter: brightness(1.15); }
 
-  .tweet { display: flex; gap: 12px; color: inherit; cursor: pointer;
-    border-bottom: 1px solid var(--border); padding: 12px 16px; transition: background .12s; }
-  .tweet:hover { background: rgba(231,233,234,0.03); }
-  .avatar { position: relative; width: 40px; height: 40px; border-radius: 50%; flex-shrink: 0;
+  /* ── cards ────────────────────────────────────────────── */
+  .tweet { display: flex; gap: 12px; cursor: pointer; position: relative;
+    border-bottom: 1px solid var(--hairline); padding: 18px 16px 14px 12px; transition: background .15s; }
+  .tweet:hover { background: rgba(236,231,223,0.025); }
+  .rank { width: 24px; flex-shrink: 0; text-align: right; padding-top: 2px;
+    font-family: "Newsreader", Georgia, serif; font-size: 15px; font-variant-numeric: tabular-nums;
+    color: var(--faint); transition: color .15s; }
+  .tweet:hover .rank { color: var(--accent); }
+  .avatar { position: relative; width: 42px; height: 42px; border-radius: 12px; flex-shrink: 0;
     display: flex; align-items: center; justify-content: center; overflow: hidden;
     color: #fff; font-weight: 700; font-size: 17px; user-select: none; }
   .avatar img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
-    opacity: 0; transition: opacity .15s; }
+    opacity: 0; transition: opacity .2s; }
   .body { flex: 1; min-width: 0; }
-  .meta { display: flex; align-items: center; gap: 4px; margin-bottom: 2px; }
-  .name { font-weight: 700; }
+  .meta { display: flex; align-items: center; gap: 5px; margin-bottom: 3px; min-width: 0; }
+  .name { font-weight: 700; letter-spacing: -0.005em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .name:hover { text-decoration: underline; }
-  .handle, .time { color: var(--muted); }
-  .time::before { content: "·"; margin: 0 4px; }
-  .taste { margin-left: auto; display: inline-flex; align-items: center; gap: 5px;
-    font-size: 12px; font-weight: 700; color: var(--accent);
-    background: rgba(29,155,240,0.12); border: 1px solid rgba(29,155,240,0.25);
-    padding: 2px 9px; border-radius: 999px; white-space: nowrap; }
-  .text { line-height: 1.4; white-space: pre-wrap; word-break: break-word; margin-top: 1px; }
-  .text a.lnk { color: var(--accent); text-decoration: none; }
-  .actions { display: flex; justify-content: space-between; max-width: 340px; margin-top: 12px; color: var(--muted); }
-  .act { display: flex; align-items: center; gap: 6px; font-size: 13px; }
-  .act svg { width: 18px; height: 18px; fill: currentColor; }
-  .act.r:hover { color: var(--accent); } .act.t:hover { color: var(--rt); } .act.l:hover { color: var(--like); }
+  .handle, .time { color: var(--muted); font-size: 13.5px; flex-shrink: 0; }
+  .time::before { content: "·"; margin: 0 4px; color: var(--faint); }
+  .taste { margin-left: auto; flex-shrink: 0; display: inline-flex; align-items: center; gap: 4px;
+    font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums;
+    color: var(--accent); background: var(--accent-dim);
+    padding: 3px 9px; border-radius: 6px; white-space: nowrap; }
+  .taste.xp { color: var(--muted); background: none; border: 1px dashed var(--border); font-style: italic; font-weight: 500; }
+  .text { line-height: 1.5; white-space: pre-wrap; word-break: break-word; margin-top: 2px; text-wrap: pretty; }
+  .text a.lnk { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-dim); }
+  .text a.lnk:hover { border-bottom-color: var(--accent); }
 
-  /* in-flow gold labels: 👍/👎 on each digest card */
-  .arow { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
-  .arow .actions { margin-top: 0; flex: 1; }
+  .actions { display: flex; gap: 22px; color: var(--faint); }
+  .act { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-variant-numeric: tabular-nums;
+    transition: color .15s; }
+  .act svg { width: 16px; height: 16px; fill: currentColor; }
+  .tweet:hover .act, .rv-card .act { color: var(--muted); }
+
+  /* in-flow gold labels: Keep/Drop on each digest card */
+  .arow { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 12px; margin-top: 14px; }
+  @media (max-width: 480px) { .actions { gap: 16px; } .rank { width: 16px; } .tweet { gap: 10px; } }
   .vote { display: flex; gap: 8px; }
-  .vote button { background: none; border: 1px solid var(--border); border-radius: 9999px;
-    padding: 4px 11px; font-size: 14px; line-height: 1.3; cursor: pointer;
-    filter: grayscale(1); opacity: .7; transition: all .12s; }
-  .vote button:hover, .vote button.on { filter: none; opacity: 1; }
-  .vote .up.on { border-color: var(--rt); background: rgba(0,186,124,0.15); }
-  .vote .dn.on { border-color: var(--like); background: rgba(249,24,128,0.15); }
+  .vote button { background: none; border: 1px solid var(--border); border-radius: 8px;
+    color: var(--muted); padding: 5px 14px; font-size: 12.5px; font-weight: 600; line-height: 1.4;
+    cursor: pointer; transition: all .15s; }
+  .vote button:active { transform: scale(0.96); }
+  .vote .up:hover, .vote .up.on { color: var(--keep); border-color: var(--keep); background: rgba(134,181,133,0.1); }
+  .vote .dn:hover, .vote .dn.on { color: var(--drop); border-color: var(--drop); background: rgba(207,125,118,0.1); }
 
   /* inline media — judge the tweet without opening X */
-  .mgrid { display: grid; gap: 2px; margin-top: 12px; border-radius: 16px; overflow: hidden;
+  .mgrid { display: grid; gap: 2px; margin-top: 12px; border-radius: 12px; overflow: hidden;
     border: 1px solid var(--border); }
   .mgrid.n2, .mgrid.n3, .mgrid.n4 { grid-template-columns: 1fr 1fr; }
   .mgrid.n3 .mi:first-child { grid-row: span 2; }
@@ -76,63 +108,96 @@
   .mgrid.n2 .mi, .mgrid.n3 .mi, .mgrid.n4 .mi { aspect-ratio: 1; }
   .play { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
     pointer-events: none; }
-  .play span { width: 52px; height: 52px; border-radius: 50%; background: rgba(29,155,240,0.9);
-    border: 4px solid #fff; display: flex; align-items: center; justify-content: center; }
-  .play svg { width: 20px; height: 20px; fill: #fff; margin-left: 3px; }
+  .play span { width: 48px; height: 48px; border-radius: 50%; background: rgba(19,17,16,0.75);
+    border: 1.5px solid rgba(236,231,223,0.9); backdrop-filter: blur(4px);
+    display: flex; align-items: center; justify-content: center; }
+  .play svg { width: 18px; height: 18px; fill: #fff; margin-left: 3px; }
 
   /* quoted-tweet context card — the "no context" fix */
-  .qcard { border: 1px solid var(--border); border-radius: 12px; margin-top: 12px;
-    padding: 10px 12px; cursor: pointer; transition: background .12s; overflow: hidden; }
-  .qcard:hover { background: rgba(231,233,234,0.04); }
-  .qcard .qmeta { display: flex; align-items: center; gap: 5px; font-size: 14px; min-width: 0; }
-  .qcard .avatar { width: 18px; height: 18px; font-size: 9px; }
-  .qcard .text { font-size: 14px; margin-top: 2px; }
-  .qcard .mgrid { margin-top: 8px; border-radius: 10px; }
-  .qmiss { color: var(--muted); font-style: italic; font-size: 14px; }
+  .qcard { border: 1px solid var(--border); border-radius: 10px; margin-top: 12px; background: rgba(236,231,223,0.015);
+    padding: 10px 12px; cursor: pointer; transition: background .15s, border-color .15s; overflow: hidden; }
+  .qcard:hover { background: rgba(236,231,223,0.04); border-color: var(--faint); }
+  .qcard .qmeta { display: flex; align-items: center; gap: 5px; font-size: 13.5px; min-width: 0; }
+  .qcard .avatar { width: 18px; height: 18px; font-size: 9px; border-radius: 5px; }
+  .qcard .text { font-size: 13.5px; margin-top: 3px; color: var(--muted); }
+  .qcard .mgrid { margin-top: 8px; border-radius: 8px; }
+  .qmiss { color: var(--muted); font-style: italic; font-size: 13.5px; }
 
-  #status { text-align: center; padding: 40px 16px; color: var(--muted); }
-  #status .big { font-size: 20px; font-weight: 800; color: var(--text); margin-bottom: 6px; }
+  /* ── status / empty / skeleton ────────────────────────── */
+  #status { text-align: center; padding: 56px 24px; color: var(--muted); line-height: 1.6; }
+  #status .big { font-family: "Newsreader", Georgia, serif; font-style: italic; font-weight: 500;
+    font-size: 24px; color: var(--text); margin-bottom: 8px; }
+  .skel { display: flex; gap: 12px; padding: 18px 16px 14px 12px; border-bottom: 1px solid var(--hairline); }
+  .skel > div { background: var(--surface); border-radius: 8px; position: relative; overflow: hidden; }
+  .skel .sa { width: 42px; height: 42px; border-radius: 12px; margin-left: 24px; flex-shrink: 0; }
+  .skel .sb { flex: 1; height: 42px; opacity: .6; }
+  .skel > div::after { content: ""; position: absolute; inset: 0;
+    background: linear-gradient(100deg, transparent 30%, rgba(236,231,223,0.05) 50%, transparent 70%);
+    animation: shimmer 1.4s infinite; }
+  @keyframes shimmer { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+  @media (prefers-reduced-motion: reduce) { .skel > div::after { animation: none; } }
 
-  /* review mode */
-  #review { display: none; padding: 16px; }
+  footer { padding: 28px 16px 44px; text-align: center; color: var(--faint); font-size: 12px; }
+  footer .serif { font-style: italic; font-size: 14px; color: var(--muted); }
+
+  /* ── review mode ──────────────────────────────────────── */
+  #review { display: none; padding: 20px 16px; }
   #review.on { display: block; }
-  #app.review #digest, #app.review .tabs { display: none; }
-  .rv-card { border: 1px solid var(--border); border-radius: 16px; padding: 18px; }
-  .rv-card .text { margin-top: 10px; font-size: 16px; }
-  .rv-dwell { color: var(--accent); font-size: 13px; margin-top: 12px; }
-  .rv-dwell a { color: inherit; }
-  .rv-actions { display: flex; gap: 12px; margin-top: 18px; }
-  .rv-actions button { flex: 1; padding: 13px; border-radius: 9999px; border: 1px solid var(--border);
-    font-size: 15px; font-weight: 700; cursor: pointer; background: var(--surface); color: var(--text); }
-  .rv-no:hover { background: rgba(249,24,128,0.15); border-color: var(--like); color: var(--like); }
-  .rv-yes:hover { background: rgba(0,186,124,0.15); border-color: var(--rt); color: var(--rt); }
-  .rv-hint { text-align: center; color: var(--muted); font-size: 12px; margin-top: 14px; }
-  #rv-progress { color: var(--muted); font-size: 13px; }
+  #app.review #digest, #app.review .tabs, #app.review footer { display: none; }
+  .rv-top { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
+  .rv-back { background: none; border: 1px solid var(--border); color: var(--muted); border-radius: 8px;
+    font-size: 13px; font-weight: 600; padding: 6px 14px; cursor: pointer; transition: all .15s; }
+  .rv-back:hover { color: var(--text); border-color: var(--faint); }
+  #rv-progress { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .rv-bar { flex: 1; height: 3px; background: var(--surface-2); border-radius: 2px; overflow: hidden; }
+  .rv-bar i { display: block; height: 100%; background: var(--accent); border-radius: 2px; transition: width .25s; }
+  .rv-card { border: 1px solid var(--border); border-radius: 14px; padding: 20px;
+    background: var(--surface); box-shadow: 0 12px 40px -18px rgba(0,0,0,0.6); }
+  .rvrow { display: flex; gap: 12px; }
+  .rv-card .text { margin-top: 12px; font-size: 16px; line-height: 1.55; }
+  .rv-dwell { color: var(--muted); font-size: 13px; margin-top: 14px; }
+  .rv-dwell a { color: var(--accent); text-decoration: none; }
+  .rv-dwell a:hover { text-decoration: underline; }
+  .rv-actions { display: flex; gap: 12px; margin-top: 20px; }
+  .rv-actions button { flex: 1; padding: 13px; border-radius: 10px; border: 1px solid var(--border);
+    font-size: 15px; font-weight: 700; cursor: pointer; background: var(--surface-2); color: var(--text);
+    transition: all .15s; }
+  .rv-actions button:active { transform: scale(0.98); }
+  .rv-no:hover { background: rgba(207,125,118,0.12); border-color: var(--drop); color: var(--drop); }
+  .rv-yes:hover { background: rgba(134,181,133,0.12); border-color: var(--keep); color: var(--keep); }
+  .rv-hint { text-align: center; color: var(--faint); font-size: 12px; margin-top: 14px; }
 </style>
 </head>
 <body>
 <div id="app">
   <header>
     <div class="htop">
-      <h1>actually for you</h1>
-      <div class="sub" id="sub">ranked by your taste · not the algorithm</div>
+      <h1>actually <span class="fy">for you</span></h1>
+      <div class="dateline"><span class="day" id="dateline"></span><span class="dot">·</span><span id="sub">ranked by your taste, not the algorithm</span></div>
     </div>
-    <div class="tabs" id="tabs">
-      <button data-days="0" onclick="setRange(0)">All</button>
+    <nav class="tabs" id="tabs">
+      <button data-days="2" class="on" onclick="setRange(2)">Last 48h</button>
       <button data-days="7" onclick="setRange(7)">7 days</button>
-      <button data-days="2" class="on" onclick="setRange(2)">48h</button>
-      <button onclick="toggleReview()">Review ⚖</button>
-    </div>
+      <button data-days="0" onclick="setRange(0)">Archive</button>
+      <span class="spacer"></span>
+      <button class="review-btn" onclick="toggleReview()">✦ Review</button>
+    </nav>
   </header>
-  <div id="review"></div>
-  <div id="digest"></div>
-  <div id="status"></div>
+  <main>
+    <div id="review"></div>
+    <div id="digest"></div>
+    <div id="status"></div>
+  </main>
+  <footer><span class="serif">fin.</span><br>every Keep/Drop signs a gold label the ranker must answer to</footer>
 </div>
 <script>
 const TOKEN = '__AFY_TOKEN__'; // injected by server.ts at serve time — write auth for /review
-let days = 2; // default 48h AUTHORED window (matches the .on tab above) — "All" is the archive view
+let days = 2; // default 48h AUTHORED window (matches the .on tab above) — "Archive" is the everything view
 
-// Avatar: a colored-initial circle (always renders instantly) with the real X profile photo layered
+document.getElementById('dateline').textContent =
+  new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+
+// Avatar: a colored-initial tile (always renders instantly) with the real X profile photo layered
 // over it via unavatar, lazy-loaded so we never hammer (and rate-limit) unavatar with 50 at once.
 // On load the photo fades in over the initial; on a miss the img is removed and the initial stays —
 // so we get real headshots where available, a clean initial otherwise, and never a broken image.
@@ -144,7 +209,7 @@ function avatar(name, handle){
   const photo = /^[A-Za-z0-9_]{1,20}$/.test(handle)
     ? `<img loading="lazy" src="/avatar/${handle}" onload="this.style.opacity=1" onerror="this.remove()" alt="">`
     : '';
-  return `<div class="avatar" style="background:hsl(${h%360} 58% 45%)">${esc(initial)}${photo}</div>`;
+  return `<div class="avatar" style="background:hsl(${h%360} 38% 38%)">${esc(initial)}${photo}</div>`;
 }
 // Card is a div (not <a>) so inner URL links don't create illegal nested anchors. Whole card opens
 // the tweet unless an actual link was clicked.
@@ -164,7 +229,7 @@ function mediaHtml(media){
   const items = (media || []).filter(m => m && m.url).slice(0, 4);
   if (!items.length) return '';
   const cells = items.map(m => `<div class="mi">
-      <img loading="lazy" src="${esc(m.url)}" onerror="this.closest('.mi').remove()" alt="">
+      <img loading="lazy" src="${esc(m.url)}" onerror="this.closest('.mi').remove()" alt="tweet media">
       ${m.type !== 'photo' ? '<div class="play"><span><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></span></div>' : ''}
     </div>`).join('');
   return `<div class="mgrid n${items.length}">${cells}</div>`;
@@ -192,7 +257,11 @@ const ICON = {
   like: '<svg viewBox="0 0 24 24"><path d="M16.697 5.5c-1.222-.06-2.679.51-3.89 2.16l-.805 1.09-.806-1.09C9.984 6.01 8.526 5.44 7.304 5.5c-1.243.07-2.349.78-2.91 1.91-.552 1.12-.633 2.78.479 4.82 1.074 1.97 3.257 4.27 7.129 6.61 3.87-2.34 6.052-4.64 7.126-6.61 1.111-2.04 1.03-3.7.477-4.82-.561-1.13-1.666-1.84-2.908-1.91z"/></svg>',
   views: '<svg viewBox="0 0 24 24"><path d="M8.75 21V3h2v18h-2zM18 21V8.5h2V21h-2zM4 21l.004-10h2L6 21H4zm9.248 0v-7h2v7h-2z"/></svg>'};
 
-function esc(s){ return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+// X's API ships text/names pre-escaped (&gt; &amp; …) — decode that once, then re-escape for our DOM.
+// A literal "&gt;" typed by the author arrives as "&amp;gt;", decodes to "&gt;", and still displays right.
+const ENT = {'&amp;':'&','&lt;':'<','&gt;':'>','&quot;':'"','&#39;':"'",'&#039;':"'",'&apos;':"'"};
+function esc(s){ return String(s ?? '').replace(/&(?:amp|lt|gt|quot|apos|#0?39);/g, m=>ENT[m])
+  .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function linkify(s){ return esc(s).replace(/https?:\/\/\S+/g, m=>`<a class="lnk" href="${m}" target="_blank" rel="noopener">${m.replace(/^https?:\/\/(www\.)?/,'').slice(0,24)}${m.length>30?'…':''}</a>`); }
 function fmt(d){ if(!d) return ''; const dt=new Date(d), s=(Date.now()-dt)/1000;
   if(s<3600) return Math.max(1,Math.round(s/60))+'m';
@@ -207,42 +276,51 @@ function mixTip(t){ if(!t.parts) return 'cosine similarity to your likes';
   const f=x=>(x>=0?'+':'')+Number(x).toFixed(2);
   return `mix score — taste ${f(t.parts.taste)} · rubric ${f(t.parts.rubric)} · author ${f(t.parts.author)}`; }
 
+function skeleton(n=6){ return Array.from({length:n},()=>'<div class="skel"><div class="sa"></div><div class="sb"></div></div>').join(''); }
+
+// shared card pieces — digest and review lanes render the same tweet primitive
+function metaHtml(t, badge=''){
+  const handle=t.author_handle||'';
+  return `<span class="name">${esc(t.author_name||handle||'Unknown')}</span>
+      ${handle?`<span class="handle">@${esc(handle)}</span>`:''}
+      ${t.created_at?`<span class="time">${fmt(t.created_at)}</span>`:''}
+      ${badge}`;
+}
+function actionsHtml(t){
+  return `<div class="actions">
+      <span class="act">${ICON.reply}${num(t.replies)}</span>
+      <span class="act">${ICON.rt}${num(t.rts)}</span>
+      <span class="act">${ICON.like}${num(t.likes)}</span>
+      <span class="act">${ICON.views}${num(t.views)}</span>
+    </div>`;
+}
+
 async function load(){
   const d = await fetch(`/digest?limit=50&days=${days}`).then(r=>r.json());
-  document.getElementById('sub').textContent = `ranked against ${(d.profile_size||0).toLocaleString()} tweets you've liked · not the algorithm`;
   const box = document.getElementById('digest');
   if(!d.items.length){ box.innerHTML=''; document.getElementById('status').innerHTML='<div class="big">Nothing here yet</div>Scroll X and your digest fills in.'; return; }
   document.getElementById('status').innerHTML='';
   const p = pcts(d.items);
   box.innerHTML = d.items.map((t,i)=>{
-    const handle=t.author_handle||''; const name=esc(t.author_name||handle||'Unknown');
-    return `<div class="tweet" onclick="openTweet(event,'${esc(t.tweet_id)}')">
-      ${avatar(t.author_name, handle)}
+    const badge = t.lane==='explore'
+      ? `<span class="taste xp" title="explore lane — outside your taste profile, keeps the bubble open">✧ explore</span>`
+      : `<span class="taste" title="${mixTip(t)}">✦ ${p[i]}</span>`;
+    return `<article class="tweet" onclick="openTweet(event,'${esc(t.tweet_id)}')">
+      <div class="rank">${i+1}</div>
+      ${avatar(t.author_name, t.author_handle||'')}
       <div class="body">
-        <div class="meta">
-          <span class="name">${name}</span>
-          ${handle?`<span class="handle">@${esc(handle)}</span>`:''}
-          ${t.created_at?`<span class="time">${fmt(t.created_at)}</span>`:''}
-          ${t.lane==='explore'
-            ?`<span class="taste" title="explore lane — outside your taste profile, keeps the bubble open">✧ explore</span>`
-            :`<span class="taste" title="${mixTip(t)}">✦ ${p[i]}%</span>`}
-        </div>
+        <div class="meta">${metaHtml(t, badge)}</div>
         <div class="text">${linkify(t.text)}</div>
         ${mediaHtml(t.media)}
         ${quoteHtml(t.quoted)}
         <div class="arow">
-          <div class="actions">
-            <span class="act r">${ICON.reply}${num(t.replies)}</span>
-            <span class="act t">${ICON.rt}${num(t.rts)}</span>
-            <span class="act l">${ICON.like}${num(t.likes)}</span>
-            <span class="act">${ICON.views}${num(t.views)}</span>
-          </div>
+          ${actionsHtml(t)}
           <span class="vote">
-            <button class="up" title="Keep — signs a 👍 gold label" onclick="dgVote(event,'${esc(t.tweet_id)}',1,this)">👍</button>
-            <button class="dn" title="Drop — signs a 👎 gold label" onclick="dgVote(event,'${esc(t.tweet_id)}',-1,this)">👎</button>
+            <button class="up" title="Signs a 👍 gold label" onclick="dgVote(event,'${esc(t.tweet_id)}',1,this)">Keep</button>
+            <button class="dn" title="Signs a 👎 gold label" onclick="dgVote(event,'${esc(t.tweet_id)}',-1,this)">Drop</button>
           </span>
         </div>
-      </div></div>`;
+      </div></article>`;
   }).join('');
 }
 
@@ -259,8 +337,7 @@ function dgVote(e, id, v, btn){
 function setRange(d){
   days=d;
   document.querySelectorAll('#tabs button[data-days]').forEach(b=>b.classList.toggle('on',+b.dataset.days===d));
-  document.getElementById('digest').innerHTML='';
-  document.getElementById('status').textContent='Re-ranking…';
+  document.getElementById('digest').innerHTML=skeleton();
   load();
 }
 
@@ -273,19 +350,25 @@ async function toggleReview(){
 }
 function renderReview(){
   const box=document.getElementById('review');
-  if(rvIdx>=rvQueue.length){ box.innerHTML=`<div id="status"><div class="big">${rvDone?`Signed ${rvDone}`:'All caught up'}</div>Reviewed tweets feed the ranker. Scroll X, then come back.<br><br><button class="rv-yes" style="max-width:200px;margin:0 auto" onclick="toggleReview()">← Back to your feed</button></div>`; return; }
-  const t=rvQueue[rvIdx]; const handle=t.author_handle||''; const name=esc(t.author_name||handle||'Unknown');
+  if(rvIdx>=rvQueue.length){ box.innerHTML=`<div id="status"><div class="big">${rvDone?`Signed ${rvDone}`:'All caught up'}</div>Reviewed tweets feed the ranker. Scroll X, then come back.<br><br><button class="rv-back" onclick="toggleReview()">← Back to your digest</button></div>`; return; }
+  const t=rvQueue[rvIdx];
   box.innerHTML=`
-    <div style="margin-bottom:12px;display:flex;align-items:center;gap:14px">
-      <button onclick="toggleReview()" style="background:none;border:1px solid var(--border);color:var(--text);border-radius:9999px;font-size:13px;font-weight:600;padding:5px 14px;cursor:pointer">← Back</button>
+    <div class="rv-top">
+      <button class="rv-back" onclick="toggleReview()">← Back</button>
+      <div class="rv-bar"><i style="width:${Math.round(100*rvIdx/rvQueue.length)}%"></i></div>
       <span id="rv-progress">${rvIdx+1} / ${rvQueue.length}</span>
     </div>
     <div class="rv-card">
-      <div class="meta" style="gap:10px">${avatar(t.author_name, handle)}
-        <span class="name">${name}</span>${handle?`<span class="handle">@${esc(handle)}</span>`:''}</div>
-      <div class="text">${t.text?linkify(t.text):'<span style="color:var(--muted);font-style:italic">content not captured — open on X</span>'}</div>
-      ${mediaHtml(t.media)}
-      ${quoteHtml(t.quoted)}
+      <div class="rvrow">
+        ${avatar(t.author_name, t.author_handle||'')}
+        <div class="body">
+          <div class="meta">${metaHtml(t)}</div>
+          <div class="text">${t.text?linkify(t.text):'<span style="color:var(--muted);font-style:italic">content not captured — open on X</span>'}</div>
+          ${mediaHtml(t.media)}
+          ${quoteHtml(t.quoted)}
+          <div class="arow">${actionsHtml(t)}</div>
+        </div>
+      </div>
       <div class="rv-dwell">⏱ ${t.trusted_dwell?(t.trusted_dwell/1000).toFixed(1)+'s lingered':''} · <a href="https://x.com/i/web/status/${esc(t.tweet_id)}" target="_blank" rel="noopener">open on X ↗</a></div>
       <div class="rv-actions"><button class="rv-no" onclick="rvVote(-1)">← Drop</button><button class="rv-yes" onclick="rvVote(1)">Keep →</button></div>
       <div class="rv-hint">← / → arrow keys · the tweets you lingered on</div>
@@ -296,6 +379,7 @@ async function rvVote(v){ const t=rvQueue[rvIdx]; if(!t) return; rvIdx++; rvDone
 document.addEventListener('keydown',e=>{ if(!document.getElementById('app').classList.contains('review'))return;
   if(e.key==='ArrowRight')rvVote(1); else if(e.key==='ArrowLeft')rvVote(-1); });
 
+document.getElementById('digest').innerHTML=skeleton();
 load();
 </script>
 </body>
