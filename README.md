@@ -21,25 +21,7 @@ evals) don't need multi-tenant.
 
 ## Architecture
 
-```mermaid
-flowchart TB
-    X["x.com timeline<br/>scroll + a 30-min poller tab"] --> EXT["Chrome extension (MV3)<br/>GraphQL hook · dwell machine · IndexedDB queue"]
-    EXT --> ING["Ingest server :2727<br/>Node + node:sqlite, zero deps · append-only events"]
-    ING --> LBL["Labels<br/>re-derived from raw, never mutated"]
-    LBL --> RANK["Mix ranker<br/>0.5·taste + 0.3·rubric + 0.2·author<br/>~10% explore lane · MMR"]
-    RANK --> DIG["Daily digest<br/>blind two-arm interleave, serves logged per card"]
-    DIG --> MSG["8am iMessage (launchd)"]
-    subgraph EVAL["Eval stack — hand votes are the only gold labels"]
-        GATE["offline AUC pair gate"]
-        IL["online interleave verdict"]
-        JC["judge calibration"]
-        SC["scorecard"]
-        RC["recall probe"]
-    end
-    MSG --> V["👍/👎 votes + opens"]
-    V --> EVAL
-    EVAL -. ship gate .-> RANK
-```
+![Architecture: x.com → extension → ingest → mix ranker → interleaved digest → 8am iMessage, with votes feeding an eval stack that gates the ranker](docs/architecture.png)
 
 **The sensor** (`extension/`) — X is a hostile capture surface; the extension is built around
 how it fights back. Content (a `MAIN`-world GraphQL hook) and behavior (an
