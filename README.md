@@ -151,3 +151,8 @@ Thirteen milestones: capture → ingest → read loop → labels → the learned
 delivery → poller → LLM rubric → mix → serve telemetry → interleaving → the eval rebuild.
 ~63k tweets, ~88k impressions, ~600 hand votes. Build log: [`PROGRESS.md`](./PROGRESS.md) ·
 spec: [`PRD.md`](./PRD.md) · the long story: [the blog post](./docs/blog-post.md).
+
+## Inspirations
+
+[noscroll](https://x.com/noscroll) and [backscroll](https://sdan.io/projects/backscroll) — the
+two projects that seeded the idea of taking your own feed back.

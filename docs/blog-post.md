@@ -189,3 +189,7 @@ needed. At n=1, the bottleneck is labels.
 _Code and full build log: [github.com/vishkrish200/actually-for-you](https://github.com/vishkrish200/actually-for-you).
 Chrome extension (MV3, TypeScript) → zero-dependency Node + SQLite server → pure-TS ranker →
 local `claude` CLI as the judge → launchd for the 8am text._
+
+_Inspired by [noscroll](https://x.com/noscroll) and
+[backscroll](https://sdan.io/projects/backscroll) — the two projects that planted the idea of
+taking your own feed back._
