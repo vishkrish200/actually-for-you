@@ -35,25 +35,42 @@ drafting arm; votes and opens flow back. Today's reading is tomorrow's eval data
 
 ## Ranking signals
 
-`score = 0.5·z(taste) + 0.3·z(rubric) + 0.2·z(author)`, winsorized at ±2:
+Every tweet is scored by three signals, blended with fixed hand-set weights — no learned
+weights, every knob legible:
 
-| Signal | What it is | Guardrail |
-|---|---|---|
-| **Taste** | TF-IDF cosine to ~2,900 curated likes | Length-normalized |
-| **Rubric** | LLM grades tweets 0–10 vs my `RUBRIC.md` (local `claude` CLI) | Text-only — quality can't proxy fame; missing scores rank neutral |
-| **Author prior** | Per-author engagement rate | From behavior only, never hand votes |
-| **Explore lane** | ~10% the ranker did *not* pick | Anti-bubble + unbiased audit pool |
-| **MMR** | Near-duplicate penalty | Takes don't cluster |
-| **Confounders** | `char_len`, `media`, `is_thread` | Controls, never reward features |
+`score = 0.5·taste + 0.3·rubric + 0.2·author` (each z-scored, winsorized at ±2)
+
+- **Taste (0.5)** — how similar the tweet's text is to the ~2,900 tweets I've liked (TF-IDF
+  cosine). Length-normalized, so a tweet can't buy score by being long.
+- **Rubric (0.3)** — an LLM reads the tweet and grades it 0–10 against `RUBRIC.md`, a short
+  written description of what I want more of. It sees only the text — no author, no like
+  counts — so "high quality" can't quietly become "already famous". Runs on the local `claude`
+  CLI; if scoring fails, tweets rank neutral instead of blocking the digest.
+- **Author prior (0.2)** — how often I've actually engaged with this author before. Computed
+  from behavior only, never from my votes — those are reserved for grading rankers (below).
+
+Two adjustments after the blend:
+
+- **Explore lane** — ~10% of every digest is tweets the ranker did *not* choose, so the feed
+  never becomes an echo of itself. My votes on these cards double as a bias-free audit set.
+- **Diversity pass (MMR)** — near-duplicate takes get penalized, so the top of the digest
+  isn't five versions of the same story.
+
+Tweet length, media, and thread-ness are treated as **confounders**: regressed out during any
+training, never used as reward. A tweet can't earn rank for being long or having a picture.
 
 ## How it grades itself
 
-Hand votes are the **only** gold labels. Keyword and LLM scores may rank, never label. Nothing
-trains on reviews.
+Three layers, ground truth up: my hand votes are the only ground truth, an **offline gate**
+screens rankers, and a **live A/B test** inside the daily digest picks winners. One rule holds
+everywhere: keyword scores and LLM scores may *rank* tweets, but only my 👍/👎 votes may
+*judge* rankers — anything else would be a model grading its own homework.
 
-**Offline gate** (`npm run eval`) — one question: across every 👍/👎 pair, how often does the
-ranker put the 👍 on top? A ranker clears only by beating keyword with a bootstrap CI that
-excludes zero — a straddle is a TIE.
+**The offline gate** (`npm run eval`) asks one question: take every pair of tweets where I
+voted 👍 on one and 👎 on the other — how often does the ranker put the 👍 tweet higher? That
+fraction is the AUC below: 0.5 is a coin flip, 1.0 is perfect. A ranker passes only if it
+beats the keyword baseline by a margin the bootstrap confidence interval says is real (the
+`*` rows); an interval containing zero is a tie, not a win.
 
 ```
 ▼ NON-CIRCULAR SHIP GATE  (233 👍 × 358 👎 = 83,414 pairs)
@@ -68,23 +85,33 @@ mix (M9 digest blend)         0.6959  [+0.011, +0.123] *
 SHIP ✅  mix beats keyword on all-pairs AUC with a diff CI excluding 0.
 ```
 
-The shipped blend clears. The rubric hovers just short, its coverage printed beside it — a
-starved judge can't pose as confident. Even tweet-*length* beats keyword, which is why
-`char_len` is a control and keyword is a baseline, not a champion.
+Reading it: the shipped blend (`mix`) clears the gate. The LLM judge (`rubric`) hovers just
+short — and the report prints its coverage (483 of 591 tweets scored) right beside the number,
+so a judge that only graded part of the pool can't look confident. Even `char_len` — ranking
+by sheer tweet length — beats the keyword counter, which is why length is a confounder control
+and keyword is a baseline to beat, never a champion.
 
-**Online interleave** (`npm run interleave`) — the verdict-maker. Two rankers team-draft every
-slate, blind and pixel-identical; credit = opens + 👍 − 👎, and it goes negative.
+**The live A/B** (`npm run interleave`) is the deciding vote. Every morning's digest is
+secretly drafted by two rankers taking turns, like picking teams — the UI is identical either
+way, and nothing reveals which ranker picked which card. A ranker earns credit when I open or
+👍 its picks, and loses credit when I 👎 them. The current matchup:
 
 ```
 TIED at n=36 judged events — the (keyword − mix) credit-rate CI [-0.077, 0.047] contains 0.
 No ranker leads yet; keep serving.
 ```
 
-A report that says "keep serving" instead of inventing a winner is the point.
+An A/B report that says "keep serving" instead of inventing a winner is the point.
 
-**Also standing:** judge calibration — rubric edits scored against my votes, 0.687 → 0.724,
-observe-only · scorecard — junk@10 per day, 72.7% → 0% in a week · recall probe — what I
-engaged with that the digest never served first.
+Three smaller instruments run alongside:
+
+- **Judge calibration** — every edit to `RUBRIC.md` is scored on whether the LLM's grades
+  moved closer to my votes (0.687 → 0.724 after personalizing it). Observe-only: tuning the
+  rubric against this table would make the judge grade itself.
+- **Scorecard** — junk in each day's top 10: 72.7% on the digest's first day, 0% the last
+  three days.
+- **Recall probe** — tweets I organically liked that the digest never showed me first: the
+  detector for what the system *misses*, not just what it mis-ranks.
 
 ## Field notes
 
