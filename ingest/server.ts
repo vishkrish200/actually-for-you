@@ -2,7 +2,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { buildDigest, candidateCount, attachQuoted, parseMedia } from "./digest.ts";
+import { buildDigest, candidateCount, attachQuoted, parseMedia, isReply, buildAuthorPrior, REPLY_MIN_AUTHOR_LIKES } from "./digest.ts";
 
 const PORT = 2727;
 const DB_PATH = process.env.AFY_DB ?? "afy.db";
@@ -380,7 +380,7 @@ export const server = http.createServer(async (req, res) => {
   // are the ambiguous-magnitude items whose sign only an explicit verdict can settle.
   if (req.method === "GET" && req.url?.startsWith("/review/queue")) {
     const url = new URL(req.url, "http://localhost");
-    const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "50"), 100);
+    const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "50"), 200);
     const rows = db.prepare(`
       SELECT i.tweet_id,
         t.author_handle, t.author_name, t.author_id, t.text, t.media, t.quoted_id,
@@ -398,10 +398,18 @@ export const server = http.createServer(async (req, res) => {
       HAVING MAX(i.max_visible_pct) >= 0.5 AND trusted_dwell > 1500
       ORDER BY trusted_dwell DESC
       LIMIT ?
-    `).all(limit);
+    `).all(limit * 4);
+    // Format policy (user directive 2026-07-13), same rule as the digest: replies earn a review
+    // slot only from high-like-prior authors. Reading a conversation racks up dwell on every
+    // reply, so without this the dwell-sorted queue is ~27% engagement-farm replies. Over-fetch
+    // 4x then cut — the queue backlog is thousands deep, it will fill.
+    const prior = buildAuthorPrior(db);
+    const kept = (rows as any[])
+      .filter(r => !isReply(r.text ?? "") || (prior.get(r.author_id ?? "") ?? 0) >= Math.log1p(REPLY_MIN_AUTHOR_LIKES))
+      .slice(0, limit);
     // Same inline context as the digest: parsed media + resolved quoted tweet (review mode has
     // the identical "can't judge without clicking through" friction).
-    const enriched = attachQuoted(db, rows as any[]).map(({ quoted_id: _q, ...r }: any) =>
+    const enriched = attachQuoted(db, kept).map(({ quoted_id: _q, ...r }: any) =>
       ({ ...r, media: parseMedia(r.media) }));
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ tweets: enriched }));

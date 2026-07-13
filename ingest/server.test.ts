@@ -302,3 +302,29 @@ describe("M11 digest_log arm attribution", () => {
     for (const it of json.items) assert.equal(byId.get(it.tweet_id), it.arm ?? null, `arm logged == item.arm for ${it.tweet_id}`);
   });
 });
+
+// ---- Review queue format policy: replies only from high-like-prior authors ----
+describe("review queue reply filter", () => {
+  it("drops cold-author replies, keeps originals and high-prior-author replies", async () => {
+    // High-prior author: 2 kept likes (≥ REPLY_MIN_AUTHOR_LIKES) attributed via tweets.author_id.
+    await post({ tweets: [
+      { ...tweet, tweet_id: "rq-like1", author_id: "hp", text: "liked one" },
+      { ...tweet, tweet_id: "rq-like2", author_id: "hp", text: "liked two" },
+      { ...tweet, tweet_id: "rq-orig", author_id: "cold1", text: "an original tweet with plenty of tokens here" },
+      { ...tweet, tweet_id: "rq-reply-cold", author_id: "cold2", text: "@someone great point totally agree with all of this" },
+      { ...tweet, tweet_id: "rq-reply-hp", author_id: "hp", text: "@someone a reply from an author whose posts you keep liking" },
+    ] });
+    db.prepare("INSERT OR IGNORE INTO engagement_labels (tweet_id, source, ts) VALUES (?,?,?)").run("rq-like1", "like", "2026-01-01T00:00:00Z");
+    db.prepare("INSERT OR IGNORE INTO engagement_labels (tweet_id, source, ts) VALUES (?,?,?)").run("rq-like2", "like", "2026-01-01T00:00:00Z");
+    // Trusted dwell for the three queue candidates (>1500ms, visible, unflicked, slow entry).
+    await post({ impressions: ["rq-orig", "rq-reply-cold", "rq-reply-hp"].map(id => ({
+      ...impression, impression_id: `imp-${id}`, tweet_id: id, dwell_ms: 5000, max_visible_pct: 0.9,
+    })) });
+    const { status, json } = await req("GET", "/review/queue?limit=50");
+    assert.equal(status, 200);
+    const ids = new Set(json.tweets.map((t: any) => t.tweet_id));
+    assert.ok(ids.has("rq-orig"), "original stays in the queue");
+    assert.ok(!ids.has("rq-reply-cold"), "cold-author reply is filtered out");
+    assert.ok(ids.has("rq-reply-hp"), "high-like-prior author's reply survives");
+  });
+});

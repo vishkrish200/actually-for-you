@@ -327,11 +327,20 @@ async function load(){
 // In-flow gold labels: same /review row as review mode (labels.ts takes the latest verdict per
 // tweet, so clicking the other button just re-signs). The card stays for this session; the next
 // digest build drops reviewed tweets — the vote doubles as a read receipt.
+// One sender for every vote. keepalive: an arrow-key vote followed by closing the tab aborted
+// the in-flight POST — the vote silently vanished and the tweet reappeared in the next queue
+// (the "I already reviewed this" leak). A 4xx/5xx isn't a fetch rejection either, so check ok
+// and be LOUD: a lost gold label is capture breakage, not noise.
+function signReview(id, v){
+  fetch('/review',{method:'POST',keepalive:true,headers:{'Content-Type':'application/json','x-afy-token':TOKEN},
+    body:JSON.stringify({tweet_id:id,verdict:v})})
+    .then(r=>{ if(!r.ok) throw new Error(r.status); })
+    .catch(e=>alert(`Vote NOT saved (${e.message||'offline'}) — it will reappear in the queue.`));
+}
 function dgVote(e, id, v, btn){
   e.stopPropagation();
   for (const b of btn.parentElement.children) b.classList.toggle('on', b === btn);
-  fetch('/review',{method:'POST',headers:{'Content-Type':'application/json','x-afy-token':TOKEN},
-    body:JSON.stringify({tweet_id:id,verdict:v})}).catch(()=>{});
+  signReview(id, v);
 }
 
 function setRange(d){
@@ -375,7 +384,7 @@ function renderReview(){
     </div>`;
 }
 async function rvVote(v){ const t=rvQueue[rvIdx]; if(!t) return; rvIdx++; rvDone++; renderReview();
-  fetch('/review',{method:'POST',headers:{'Content-Type':'application/json','x-afy-token':TOKEN},body:JSON.stringify({tweet_id:t.tweet_id,verdict:v})}).catch(()=>{}); }
+  signReview(t.tweet_id, v); }
 document.addEventListener('keydown',e=>{ if(!document.getElementById('app').classList.contains('review'))return;
   if(e.key==='ArrowRight')rvVote(1); else if(e.key==='ArrowLeft')rvVote(-1); });
 
