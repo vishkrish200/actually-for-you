@@ -80,6 +80,42 @@
   .text a.lnk { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-dim); }
   .text a.lnk:hover { border-bottom-color: var(--accent); }
 
+  /* long-form clamp: full text is stored; fold anything past ~12 lines behind Read more */
+  .text.clamp { max-height: 12em; overflow: hidden;
+    -webkit-mask-image: linear-gradient(#000 72%, transparent); mask-image: linear-gradient(#000 72%, transparent); }
+  .rmore { background: none; border: 0; color: var(--accent); font-size: 13px; font-weight: 600;
+    cursor: pointer; padding: 4px 0 0; display: block; }
+  .rmore:hover { text-decoration: underline; }
+
+  /* ── author identity: verified/affiliate badges + hover profile card ── */
+  .who { display: inline-flex; align-items: center; gap: 5px; min-width: 0; position: relative; }
+  .who .name { min-width: 0; }
+  .vbadge { width: 16px; height: 16px; flex-shrink: 0; fill: #1d9bf0; }
+  .vbadge.gold { fill: #dcab2c; }
+  .vbadge.gray { fill: #829aab; }
+  .abadge { width: 15px; height: 15px; border-radius: 3px; flex-shrink: 0;
+    border: 1px solid var(--border); background: var(--surface); }
+  .pcard { position: absolute; top: calc(100% + 6px); left: -10px; z-index: 30; width: 290px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 14px;
+    box-shadow: 0 14px 36px rgba(0,0,0,0.55); cursor: default; text-align: left;
+    white-space: normal; font-size: 14px; font-weight: 400;
+    opacity: 0; visibility: hidden; transform: translateY(-4px);
+    transition: opacity .12s ease, visibility 0s linear .12s, transform .12s ease; }
+  /* Twitter-style intent delay: appears after you rest on the name, hides fast on leave */
+  .who:hover .pcard, .pcard:hover { opacity: 1; visibility: visible; transform: none;
+    transition: opacity .15s ease .45s, visibility 0s linear .45s, transform .15s ease .45s; }
+  .pc-top { display: flex; gap: 10px; align-items: center; min-width: 0; }
+  .pcard .avatar { width: 48px; height: 48px; border-radius: 14px; font-size: 20px; }
+  .pc-name { font-weight: 700; display: flex; align-items: center; gap: 4px; min-width: 0; }
+  .pc-name > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pc-handle { color: var(--muted); font-size: 13px; text-decoration: none; }
+  .pc-handle:hover { text-decoration: underline; }
+  .pc-aff { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12.5px; margin-top: 10px; }
+  .pc-aff img { width: 16px; height: 16px; border-radius: 3px; border: 1px solid var(--border); flex-shrink: 0; }
+  .pc-bio { margin-top: 10px; font-size: 13.5px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
+  .pc-counts { margin-top: 10px; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .pc-counts b { color: var(--text); font-weight: 700; }
+
   .actions { display: flex; gap: 22px; color: var(--faint); }
   .act { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-variant-numeric: tabular-nums;
     transition: color .15s; }
@@ -103,8 +139,9 @@
   .mgrid.n2, .mgrid.n3, .mgrid.n4 { grid-template-columns: 1fr 1fr; }
   .mgrid.n3 .mi:first-child { grid-row: span 2; }
   .mi { position: relative; background: var(--surface); min-height: 0; }
-  .mi img { display: block; width: 100%; height: 100%; object-fit: cover; }
-  .mgrid.n1 .mi img { max-height: 500px; height: auto; }
+  .mi img, .mi video { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .mi video { background: #000; }
+  .mgrid.n1 .mi img, .mgrid.n1 .mi video { max-height: 500px; height: auto; }
   .mgrid.n2 .mi, .mgrid.n3 .mi, .mgrid.n4 .mi { aspect-ratio: 1; }
   .play { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
     pointer-events: none; }
@@ -112,6 +149,21 @@
     border: 1.5px solid rgba(236,231,223,0.9); backdrop-filter: blur(4px);
     display: flex; align-items: center; justify-content: center; }
   .play svg { width: 18px; height: 18px; fill: #fff; margin-left: 3px; }
+
+  /* link-card embed — external URL preview instead of a bare t.co */
+  .lcard { display: flex; align-items: stretch; gap: 0; margin-top: 12px; overflow: hidden;
+    border: 1px solid var(--border); border-radius: 10px; text-decoration: none; color: inherit;
+    background: rgba(236,231,223,0.015); transition: background .15s, border-color .15s; }
+  .lcard:hover { background: rgba(236,231,223,0.04); border-color: var(--faint); }
+  .lcard img { width: 96px; min-height: 72px; object-fit: cover; flex-shrink: 0;
+    border-right: 1px solid var(--border); }
+  .lcard .lmeta { display: flex; flex-direction: column; justify-content: center; gap: 3px;
+    padding: 10px 14px; min-width: 0; }
+  .lcard .ldom { color: var(--muted); font-size: 12.5px; }
+  .lcard .ltitle { font-size: 14px; line-height: 1.35; display: -webkit-box;
+    -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .lcard .lprev { color: var(--faint); font-size: 12.5px; line-height: 1.4; display: -webkit-box;
+    -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 
   /* quoted-tweet context card — the "no context" fix */
   .qcard { border: 1px solid var(--border); border-radius: 10px; margin-top: 12px; background: rgba(236,231,223,0.015);
@@ -193,6 +245,8 @@
 <script>
 const TOKEN = '__AFY_TOKEN__'; // injected by server.ts at serve time — write auth for /review
 let days = 2; // default 48h AUTHORED window (matches the .on tab above) — "Archive" is the everything view
+// ?n=200 for a big signing session (digest caps at 200 server-side, review queue too)
+const N = Math.min(parseInt(new URLSearchParams(location.search).get('n')) || 50, 200);
 
 document.getElementById('dateline').textContent =
   new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
@@ -214,7 +268,7 @@ function avatar(name, handle){
 // Card is a div (not <a>) so inner URL links don't create illegal nested anchors. Whole card opens
 // the tweet unless an actual link was clicked.
 function openTweet(e, id){
-  if (e.target.closest('a')) return;
+  if (e.target.closest('a,video')) return; // links open themselves; video clicks are play/pause
   // M10 open receipt — fire-and-forget like votes; never blocks or delays opening the tab.
   fetch('/digest/open',{method:'POST',headers:{'Content-Type':'application/json','x-afy-token':TOKEN},
     body:JSON.stringify({tweet_id:id})}).catch(()=>{});
@@ -226,13 +280,36 @@ function openQuoted(e, id){ e.stopPropagation(); openTweet(e, id); }
 // Inline media grid: photos render directly (X's pbs CDN, lazy-loaded); video/gif show their
 // poster frame with a play badge — clicking the card opens X, where the video actually plays.
 function mediaHtml(media){
-  const items = (media || []).filter(m => m && m.url).slice(0, 4);
+  const items = (media || []).filter(m => m && m.url && m.type !== 'card' && m.type !== 'article').slice(0, 4);
   if (!items.length) return '';
-  const cells = items.map(m => `<div class="mi">
+  const cells = items.map(m => {
+    // real inline playback when the capture got an mp4 variant; gifs autoplay muted like on X
+    if (m.video) return `<div class="mi"><video ${m.type === 'gif'
+        ? 'autoplay loop muted playsinline'
+        : `controls preload="none" playsinline poster="${esc(m.url)}"`} src="${esc(m.video)}"></video></div>`;
+    return `<div class="mi">
       <img loading="lazy" src="${esc(m.url)}" onerror="this.closest('.mi').remove()" alt="tweet media">
       ${m.type !== 'photo' ? '<div class="play"><span><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></span></div>' : ''}
-    </div>`).join('');
+    </div>`;
+  }).join('');
   return `<div class="mgrid n${items.length}">${cells}</div>`;
+}
+
+// Link-card embed (type:'card' media item, captured from X's card binding_values): the URL preview
+// X renders instead of a bare t.co. Real <a> — clicking opens the external link, not the tweet.
+function cardHtml(media){
+  const c = (media || []).find(m => m && (m.type === 'card' || m.type === 'article') && m.title);
+  if (!c) return '';
+  const dom = c.type === 'article' ? '𝕏 · Article' : esc(c.domain);
+  return `<a class="lcard" href="${esc(c.link || '#')}" target="_blank" rel="noopener">
+      ${c.url ? `<img loading="lazy" src="${esc(c.url)}" onerror="this.remove()" alt="">` : ''}
+      <span class="lmeta"><span class="ldom">${dom}</span><span class="ltitle">${esc(c.title)}</span>${c.preview ? `<span class="lprev">${esc(c.preview)}</span>` : ''}</span>
+    </a>`;
+}
+// X hides the trailing t.co from display when a card/article renders for it — match that.
+function stripCardUrl(text, media){
+  return (media || []).some(m => m && (m.type === 'card' || m.type === 'article') && m.title)
+    ? String(text ?? '').replace(/\s*https?:\/\/t\.co\/\w+\s*$/, '') : text;
 }
 
 // Quoted-tweet context card. Full card when we captured the original; a stub linking to X when we
@@ -246,8 +323,9 @@ function quoteHtml(q){
     <div class="qmeta">${avatar(q.author_name, handle)}
       <span class="name">${name}</span>${handle?`<span class="handle">@${esc(handle)}</span>`:''}
       ${q.created_at?`<span class="time">${fmt(q.created_at)}</span>`:''}</div>
-    <div class="text">${linkify(q.text || '')}</div>
+    <div class="text">${linkify(stripCardUrl(q.text || '', q.media))}</div>
     ${mediaHtml(q.media)}
+    ${cardHtml(q.media)}
   </div>`;
 }
 
@@ -278,13 +356,72 @@ function mixTip(t){ if(!t.parts) return 'cosine similarity to your likes';
 
 function skeleton(n=6){ return Array.from({length:n},()=>'<div class="skel"><div class="sa"></div><div class="sb"></div></div>').join(''); }
 
-// shared card pieces — digest and review lanes render the same tweet primitive
+// ── THE tweet card primitive ──────────────────────────────────────────────
+// One component for every surface (digest cards, review mode, quoted context):
+// avatar + meta + text + photo/video grid + link/article card + quoted tweet.
+// `arow` is the only surface-specific part (digest adds Keep/Drop; review just counts).
+function tweetCore(t, badge='', arow=''){
+  // long-form fold: note tweets can run thousands of chars; clamp past ~560 behind Read more
+  const raw = t.text ? stripCardUrl(t.text, t.media) : '';
+  const long = raw.length > 560;
+  return `${avatar(t.author_name, t.author_handle||'')}
+    <div class="body">
+      <div class="meta">${metaHtml(t, badge)}</div>
+      <div class="text${long?' clamp':''}">${raw ? linkify(raw)
+        : '<span style="color:var(--muted);font-style:italic">content not captured — open on X</span>'}</div>
+      ${long?'<button class="rmore" onclick="toggleMore(event,this)">Read more</button>':''}
+      ${mediaHtml(t.media)}
+      ${cardHtml(t.media)}
+      ${quoteHtml(t.quoted)}
+      ${arow ? `<div class="arow">${arow}</div>` : ''}
+    </div>`;
+}
+function toggleMore(e,btn){ e.stopPropagation();
+  const clamped = btn.previousElementSibling.classList.toggle('clamp');
+  btn.textContent = clamped ? 'Read more' : 'Show less'; }
+
+// author_profile rides the tweet row as an opaque JSON string (verified/affiliate/bio/counts)
+function prof(t){ try { const p = typeof t.author_profile === 'string' ? JSON.parse(t.author_profile) : t.author_profile;
+  return p && typeof p === 'object' ? p : null; } catch { return null; } }
+// X's verified checkmark: blue = individual, gold = Business, gray = Government — same as x.com
+const VPATH = 'M22.25 12c0-1.43-.88-2.67-2.19-3.34.46-1.39.2-2.9-.81-3.91s-2.52-1.27-3.91-.81c-.66-1.31-1.91-2.19-3.34-2.19s-2.67.88-3.33 2.19c-1.4-.46-2.91-.2-3.92.81s-1.26 2.52-.8 3.91c-1.31.67-2.2 1.91-2.2 3.34s.89 2.67 2.2 3.34c-.46 1.39-.21 2.9.8 3.91s2.52 1.26 3.91.81c.67 1.31 1.91 2.19 3.34 2.19s2.68-.88 3.34-2.19c1.39.45 2.9.2 3.91-.81s1.27-2.52.81-3.91c1.31-.67 2.19-1.91 2.19-3.34zm-11.71 4.2L6.8 12.46l1.41-1.42 2.26 2.26 4.8-5.23 1.47 1.36-6.2 6.77z';
+function badgeHtml(p){
+  if(!p) return '';
+  const cls = p.verified_type==='Business' ? ' gold' : p.verified_type==='Government' ? ' gray' : '';
+  const check = p.verified ? `<svg class="vbadge${cls}" viewBox="0 0 24 24"><path d="${VPATH}"/></svg>` : '';
+  const aff = p.affiliate && p.affiliate.badge
+    ? `<img class="abadge" loading="lazy" src="${esc(p.affiliate.badge)}" title="${esc(p.affiliate.title||'')}" onerror="this.remove()" alt="">` : '';
+  return check + aff;
+}
+// hover profile card (x.com-style): rest on the name → avatar, badges, bio, counts, no click-out
+function pcardHtml(t, p){
+  const handle=t.author_handle||'';
+  return `<div class="pcard" onclick="event.stopPropagation()">
+    <div class="pc-top">${avatar(t.author_name, handle)}
+      <div style="min-width:0">
+        <div class="pc-name"><span>${esc(t.author_name||handle||'Unknown')}</span>${badgeHtml(p)}</div>
+        ${handle?`<a class="pc-handle" href="https://x.com/${esc(handle)}" target="_blank" rel="noopener">@${esc(handle)}</a>`:''}
+      </div>
+    </div>
+    ${p&&p.affiliate&&p.affiliate.title?`<div class="pc-aff">${p.affiliate.badge?`<img src="${esc(p.affiliate.badge)}" onerror="this.remove()" alt="">`:''}<span>${esc(p.affiliate.title)}</span></div>`:''}
+    ${p&&p.bio?`<div class="pc-bio">${linkify(p.bio)}</div>`:''}
+    ${p&&(p.followers||p.following)?`<div class="pc-counts"><b>${num(p.following)||0}</b> Following&ensp;·&ensp;<b>${num(p.followers)||0}</b> Followers</div>`:''}
+  </div>`;
+}
 function metaHtml(t, badge=''){
   const handle=t.author_handle||'';
-  return `<span class="name">${esc(t.author_name||handle||'Unknown')}</span>
+  const p = prof(t);
+  return `<span class="who"><span class="name">${esc(t.author_name||handle||'Unknown')}</span>${badgeHtml(p)}
       ${handle?`<span class="handle">@${esc(handle)}</span>`:''}
+      ${handle||p ? pcardHtml(t, p) : ''}</span>
       ${t.created_at?`<span class="time">${fmt(t.created_at)}</span>`:''}
       ${badge}`;
+}
+function voteHtml(id){
+  return `<span class="vote">
+      <button class="up" title="Signs a 👍 gold label" onclick="dgVote(event,'${esc(id)}',1,this)">Keep</button>
+      <button class="dn" title="Signs a 👎 gold label" onclick="dgVote(event,'${esc(id)}',-1,this)">Drop</button>
+    </span>`;
 }
 function actionsHtml(t){
   return `<div class="actions">
@@ -296,7 +433,7 @@ function actionsHtml(t){
 }
 
 async function load(){
-  const d = await fetch(`/digest?limit=50&days=${days}`).then(r=>r.json());
+  const d = await fetch(`/digest?limit=${N}&days=${days}`).then(r=>r.json());
   const box = document.getElementById('digest');
   if(!d.items.length){ box.innerHTML=''; document.getElementById('status').innerHTML='<div class="big">Nothing here yet</div>Scroll X and your digest fills in.'; return; }
   document.getElementById('status').innerHTML='';
@@ -307,20 +444,8 @@ async function load(){
       : `<span class="taste" title="${mixTip(t)}">✦ ${p[i]}</span>`;
     return `<article class="tweet" onclick="openTweet(event,'${esc(t.tweet_id)}')">
       <div class="rank">${i+1}</div>
-      ${avatar(t.author_name, t.author_handle||'')}
-      <div class="body">
-        <div class="meta">${metaHtml(t, badge)}</div>
-        <div class="text">${linkify(t.text)}</div>
-        ${mediaHtml(t.media)}
-        ${quoteHtml(t.quoted)}
-        <div class="arow">
-          ${actionsHtml(t)}
-          <span class="vote">
-            <button class="up" title="Signs a 👍 gold label" onclick="dgVote(event,'${esc(t.tweet_id)}',1,this)">Keep</button>
-            <button class="dn" title="Signs a 👎 gold label" onclick="dgVote(event,'${esc(t.tweet_id)}',-1,this)">Drop</button>
-          </span>
-        </div>
-      </div></article>`;
+      ${tweetCore(t, badge, actionsHtml(t) + voteHtml(t.tweet_id))}
+    </article>`;
   }).join('');
 }
 
@@ -355,7 +480,7 @@ let rvQueue=[], rvIdx=0, rvDone=0;
 async function toggleReview(){
   const app=document.getElementById('app'); const on=app.classList.toggle('review');
   document.getElementById('review').classList.toggle('on',on);
-  if(on){ rvQueue=(await fetch('/review/queue?limit=50').then(r=>r.json())).tweets; rvIdx=0; rvDone=0; renderReview(); }
+  if(on){ rvQueue=(await fetch(`/review/queue?limit=${N}`).then(r=>r.json())).tweets; rvIdx=0; rvDone=0; renderReview(); }
 }
 function renderReview(){
   const box=document.getElementById('review');
@@ -368,16 +493,7 @@ function renderReview(){
       <span id="rv-progress">${rvIdx+1} / ${rvQueue.length}</span>
     </div>
     <div class="rv-card">
-      <div class="rvrow">
-        ${avatar(t.author_name, t.author_handle||'')}
-        <div class="body">
-          <div class="meta">${metaHtml(t)}</div>
-          <div class="text">${t.text?linkify(t.text):'<span style="color:var(--muted);font-style:italic">content not captured — open on X</span>'}</div>
-          ${mediaHtml(t.media)}
-          ${quoteHtml(t.quoted)}
-          <div class="arow">${actionsHtml(t)}</div>
-        </div>
-      </div>
+      <div class="rvrow">${tweetCore(t, '', actionsHtml(t))}</div>
       <div class="rv-dwell">⏱ ${t.trusted_dwell?(t.trusted_dwell/1000).toFixed(1)+'s lingered':''} · <a href="https://x.com/i/web/status/${esc(t.tweet_id)}" target="_blank" rel="noopener">open on X ↗</a></div>
       <div class="rv-actions"><button class="rv-no" onclick="rvVote(-1)">← Drop</button><button class="rv-yes" onclick="rvVote(1)">Keep →</button></div>
       <div class="rv-hint">← / → arrow keys · the tweets you lingered on</div>

@@ -20,11 +20,15 @@ export interface LabeledRow {
   // sign is a human verdict, not the keyword lexicon, so they get their own gate. See eval.ts.
   kind: "pos" | "hard_neg" | "easy_neg" | "review_pos" | "review_neg";
   // M12 — review kinds only: lane of the serve this vote attributes to (funnel's VOTE_SERVE
-  // convention — latest serve at-or-before the vote). 'explore' votes are the serve-bias-free
-  // audit subset: the ✧ lane is day-hash-sampled, no ranker chose those cards, so votes on them
-  // are the only labels whose SELECTION no arm influenced. null = context-free (pre-M10 review
-  // mode / never served); undefined on non-review kinds.
+  // convention — latest serve at-or-before the vote). 'explore' votes are the ranker-blind-spot
+  // audit subset: the ✧ lane is day-hash-sampled from what the rankers did NOT pick, so votes on
+  // them are labels no arm scored into the slate. (NOT an unbiased sample of the full candidate
+  // pool — eligibility is conditioned on the rankers rejecting the card.) null = context-free
+  // (pre-M10 review mode / never served); undefined on non-review kinds.
   served_lane?: string | null;
+  // review kinds only: ts of the latest verdict — eval.ts splits DEV (pre-cutoff) vs the
+  // PROSPECTIVE gate (post-cutoff) on this. undefined/null on non-review kinds.
+  review_ts?: string | null;
   weight: number;        // IPW hook — uniform 1 for now (see note below)
   text: string;
   author_id: string;
@@ -66,6 +70,7 @@ export function buildLabels(db: DatabaseSync): LabeledRow[] {
     media_present: r.media && r.media !== "" && r.media !== "[]" ? 1 : 0,
     is_thread: r.is_thread ? 1 : 0,
     served_lane: r.served_lane ?? null,
+    review_ts: r.review_ts ?? null,
   });
 
   // POSITIVES: engagement_labels − label_prunes, with text. (age prunes are dropped here too.)
@@ -117,7 +122,8 @@ export function buildLabels(db: DatabaseSync): LabeledRow[] {
          (SELECT MAX(ts) FROM digest_log WHERE tweet_id = r.tweet_id AND ts <= r.ts)`
     : "";
   const reviewed = db.prepare(`
-    SELECT t.tweet_id, t.text, t.author_id, t.created_at, t.media, t.is_thread, r.verdict
+    SELECT t.tweet_id, t.text, t.author_id, t.created_at, t.media, t.is_thread, r.verdict,
+      l.mts AS review_ts
       ${hasDigestLog ? ", dl.lane AS served_lane" : ""}
     FROM reviews r
     JOIN (SELECT tweet_id, MAX(ts) mts FROM reviews GROUP BY tweet_id) l

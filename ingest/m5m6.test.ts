@@ -138,12 +138,29 @@ describe("AUC gate", () => {
     const res = runEval(rows, { sha: "rig", scores });
     assert.equal(res.reviewOnly.ships, true, "the rubric candidate clears the gate");
     assert.equal(res.reviewOnly.champion, "rubric (LLM judge)");
+    // every baseline ties at 0.5 (identical text/len/time) → keyword wins the reference tie-break
+    assert.ok(res.reviewOnly.baseline.startsWith("keyword"), `keyword is the reference on an all-tied pool, got ${res.reviewOnly.baseline}`);
     const arm = res.reviewOnly.rows.find(r => r.name.startsWith("rubric"))!;
     const kw = res.reviewOnly.rows.find(r => r.name.startsWith("keyword"))!;
     assert.ok(arm.auc > kw.auc, "rubric all-pairs AUC beats keyword");
-    assert.ok(arm.diffVsKw && arm.diffVsKw[0] > 0, `diff-CI lo > 0, got ${JSON.stringify(arm.diffVsKw)}`);
-    assert.ok(!kw.diffVsKw, "keyword carries no diff against itself");
+    assert.ok(arm.diffVsBase && arm.diffVsBase[0] > 0, `diff-CI lo > 0, got ${JSON.stringify(arm.diffVsBase)}`);
+    assert.ok(!kw.diffVsBase, "the reference carries no diff against itself");
     assert.match(formatEval(res), /SHIP/);
+  });
+
+  it("gate reference = STRONGEST baseline: beating keyword but only tying char_len → HOLD", () => {
+    const rows: LabeledRow[] = [];
+    const scores = new Map<string, number>();
+    for (let i = 0; i < 30; i++) {
+      // char_len separates perfectly (AUC 1.0) → it, not keyword (all-tied, 0.5), is the reference.
+      rows.push(P(`p${i}`, { text: "same words", char_len: 100, created_at: "2024-01-01T00:00:00Z" }));
+      rows.push(N(`n${i}`, { text: "same words", char_len: 1, created_at: "2024-01-01T00:00:00Z" }));
+      scores.set(`p${i}`, 9); scores.set(`n${i}`, 1); // rubric also perfect — but perfect only TIES the bar
+    }
+    const res = runEval(rows, { sha: "rig", scores });
+    assert.equal(res.reviewOnly.baseline, "char_len", "strongest baseline becomes the reference");
+    assert.equal(res.reviewOnly.ships, false, "tying the strongest baseline is not a win");
+    assert.match(formatEval(res), /HOLD/);
   });
 
   it("tiny pool → INCONCLUSIVE and ships=false (below the floor, no verdict either way)", () => {
@@ -170,5 +187,32 @@ describe("AUC gate", () => {
     assert.ok(res.reviewAudit.rows.find(r => r.name.startsWith("keyword")), "audit ranks the same arms");
     assert.ok(res.reviewOnly.rows[0].aucCI, "main gate got a bootstrap CI (both classes present)");
     assert.ok(res.reviewAudit.rows[0].aucCI, "audit cut bootstrapped too (both classes present)");
+  });
+
+  it("prospective split: pre-cutoff votes are DEV-only — they can never issue the verdict", () => {
+    // 30 pos/neg pairs voted BEFORE the cutoff (a would-be SHIP for the rubric arm) plus a handful
+    // after it. The dev pool sees everything; the gate sees only the post-cutoff few — below the
+    // floor, so the verdict is INCONCLUSIVE no matter how loudly the dev pool ships.
+    const rows: LabeledRow[] = [];
+    const scores = new Map<string, number>();
+    for (let i = 0; i < 30; i++) {
+      rows.push(P(`p${i}`, { text: "same words", char_len: 5, created_at: "2024-01-01T00:00:00Z", review_ts: "2026-07-01T00:00:00Z" }));
+      rows.push(N(`n${i}`, { text: "same words", char_len: 5, created_at: "2024-01-01T00:00:00Z", review_ts: "2026-07-01T00:00:00Z" }));
+      scores.set(`p${i}`, 9); scores.set(`n${i}`, 1);
+    }
+    for (let i = 0; i < 3; i++) {
+      rows.push(P(`gp${i}`, { text: "same words", char_len: 5, review_ts: "2026-08-01T00:00:00Z" }));
+      rows.push(N(`gn${i}`, { text: "same words", char_len: 5, review_ts: "2026-08-01T00:00:00Z" }));
+      scores.set(`gp${i}`, 9); scores.set(`gn${i}`, 1);
+    }
+    const res = runEval(rows, { sha: "rig", scores });
+    assert.equal(res.reviewOnly.nPos + res.reviewOnly.nNeg, 66, "dev pool holds every vote");
+    assert.equal(res.reviewGate.nPos + res.reviewGate.nNeg, 6, "gate pool holds only post-cutoff votes");
+    assert.equal(res.reviewOnly.ships, true, "the dev pool would ship — that's exactly the read that must not verdict");
+    assert.equal(res.reviewGate.ships, false, "6 post-cutoff labels are below the floor");
+    const out = formatEval(res);
+    assert.match(out, /INCONCLUSIVE/, "verdict comes from the gate pool, not the shipping dev pool");
+    assert.doesNotMatch(out, /^SHIP/m, "no SHIP line sneaks in from the dev read");
+    assert.match(out, /dev pool: advisory ONLY/, "the dev table prints with its warning");
   });
 });

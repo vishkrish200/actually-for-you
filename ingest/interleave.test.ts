@@ -5,7 +5,11 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { buildDigest, teamDraft, type Arm, type DigestItem } from "./digest.ts";
-import { interleaveReport, JUDGED_FLOOR } from "./interleave.ts";
+import { interleaveReport, JUDGED_FLOOR, WINDOW_START, HORIZON_DAYS } from "./interleave.ts";
+
+// The report math is tested window-free: windowStart before every fixture date, horizon 0 so the
+// verdict logic runs immediately (the frozen WINDOW_START/HORIZON_DAYS get their own tests below).
+const PILOT = { windowStart: "0000-00-00", horizonDays: 0 };
 
 // A candidate pool where the two arms DISAGREE, so the draft actually interleaves two orderings:
 //  - liked tweets are all AI (taste profile + FAN author prior point at AI text).
@@ -17,7 +21,7 @@ import { interleaveReport, JUDGED_FLOOR } from "./interleave.ts";
 function seed(): DatabaseSync {
   const db = new DatabaseSync(":memory:");
   db.exec(`
-    CREATE TABLE tweets (tweet_id TEXT PRIMARY KEY, author_id TEXT, author_handle TEXT, author_name TEXT,
+    CREATE TABLE tweets (tweet_id TEXT PRIMARY KEY, author_id TEXT, author_handle TEXT, author_name TEXT, author_profile TEXT,
       text TEXT, media TEXT, quoted_id TEXT, created_at TEXT, captured_at TEXT,
       likes INTEGER, rts INTEGER, replies INTEGER, views INTEGER, source TEXT DEFAULT 'net');
     CREATE TABLE impressions (impression_id TEXT PRIMARY KEY, tweet_id TEXT, session_id TEXT, ts TEXT);
@@ -176,7 +180,7 @@ function reportSeedAboveFloor(): DatabaseSync {
 
 describe("M11 interleave report (read-only math)", () => {
   it("refuses a verdict below the judged-event floor, but still prints coverage", () => {
-    const r = interleaveReport(reportSeed());
+    const r = interleaveReport(reportSeed(), PILOT);
     // Per-arm credits are still computed (coverage always prints).
     const mix = r.arms.find(a => a.arm === "mix")!;
     const kw = r.arms.find(a => a.arm === "keyword")!;
@@ -195,7 +199,7 @@ describe("M11 interleave report (read-only math)", () => {
   });
 
   it("explore serves (arm=NULL) and their opens are never credited to an arm", () => {
-    const r = interleaveReport(reportSeed());
+    const r = interleaveReport(reportSeed(), PILOT);
     const total = r.arms.reduce((n, a) => n + a.served, 0);
     assert.equal(total, 6, "only the 6 arm-attributed serves count; the explore (X) row is excluded");
     assert.ok(!r.arms.some(a => a.opened > 0 && a.arm !== "mix" && a.arm !== "keyword"), "no phantom arm from explore opens");
@@ -205,7 +209,7 @@ describe("M11 interleave report (read-only math)", () => {
     // day 2026-07-06: mix credits = A(open+👍=2) + C(👎=−1) = 1; keyword = B(open=1) + D(0) = 1 → TIE
     // (the 👎 on C drags mix to parity — before net credit this was a 2–1 mix win, not a tie).
     // day 2026-07-07: mix credits = E(open=1) = 1; keyword = F(0) = 0 → mix wins. So mix 1, kw 0, 1 tie.
-    const r = interleaveReport(reportSeed());
+    const r = interleaveReport(reportSeed(), PILOT);
     assert.deepEqual(r.dayWins.map(d => ({ ...d })), [
       { arm: "keyword", days_won: 0 },
       { arm: "mix", days_won: 1 },
@@ -214,7 +218,7 @@ describe("M11 interleave report (read-only math)", () => {
   });
 
   it("above the floor: paired-bootstrap CI produces a LEAN when one arm dominates every day", () => {
-    const r = interleaveReport(reportSeedAboveFloor());
+    const r = interleaveReport(reportSeedAboveFloor(), PILOT);
     assert.ok(r.judged >= JUDGED_FLOOR, `judged ${r.judged} clears the floor ${JUDGED_FLOOR}`);
     assert.ok(r.diffCI, "CI computed above the floor");
     const [lo, , hi] = r.diffCI!;
@@ -244,7 +248,7 @@ describe("M11 interleave report (read-only math)", () => {
       open.run(`M${d}`, `${date}T08:05:00Z`); // 1 mix credit
       open.run(`K${d}`, `${date}T08:06:00Z`); // 1 keyword credit — symmetric
     }
-    const r = interleaveReport(db);
+    const r = interleaveReport(db, PILOT);
     assert.ok(r.judged >= JUDGED_FLOOR);
     const [lo, , hi] = r.diffCI!;
     assert.ok(lo <= 0 && hi >= 0, `symmetric credits → CI [${lo}, ${hi}] straddles 0`);
@@ -257,7 +261,7 @@ describe("M11 interleave report (read-only math)", () => {
     db.exec(`CREATE TABLE digest_log (digest_date TEXT, channel TEXT, tweet_id TEXT, rank INTEGER, lane TEXT, score REAL, parts TEXT, ts TEXT);
       CREATE TABLE digest_opens (tweet_id TEXT, ts TEXT);
       CREATE TABLE reviews (tweet_id TEXT, verdict INTEGER, ts TEXT);`);
-    const r = interleaveReport(db);
+    const r = interleaveReport(db, PILOT);
     assert.equal(r.arms.length, 0);
     assert.equal(r.judged, 0);
     assert.match(r.verdict, /no .?arm.? column yet/);
@@ -280,7 +284,7 @@ describe("M11 interleave report (read-only math)", () => {
     serve.run("2026-10-01", "web", "R", 3, "taste", "2026-10-01T08:00:00Z", "keyword");
     vote.run("P", -1, "2026-10-01T08:10:00Z"); // mix 👎
     vote.run("Q", -1, "2026-10-01T08:11:00Z"); // mix 👎
-    const r = interleaveReport(db);
+    const r = interleaveReport(db, PILOT);
     const mix = r.arms.find(a => a.arm === "mix")!;
     assert.equal(mix.down, 2, "both 👎 attributed to mix");
     assert.equal(mix.credits, -2, "net credit = 0 opens + 0 👍 − 2 👎");
@@ -311,7 +315,7 @@ describe("M11 interleave report (read-only math)", () => {
       vote.run(`M${d}`, -1, `${date}T08:10:00Z`); // mix 👎 every day → mix net negative
       open.run(`K${d}`, `${date}T08:05:00Z`);     // keyword opened every day → keyword positive
     }
-    const r = interleaveReport(db);
+    const r = interleaveReport(db, PILOT);
     const mix = r.arms.find(a => a.arm === "mix")!;
     const kw = r.arms.find(a => a.arm === "keyword")!;
     assert.equal(mix.credits, -35, "35 👎, no opens/👍 → −35 net credit");
@@ -342,7 +346,7 @@ describe("M11 interleave report (read-only math)", () => {
     serve.run("2026-11-01", "web", "B", 2, "taste", "2026-11-01T08:00:00Z", "keyword");
     serve.run("2026-11-01", "web", "X", 3, "explore", "2026-11-01T08:00:00Z", null); // explore: arm NULL
     vote.run("X", -1, "2026-11-01T08:10:00Z"); // 👎 on the explore card — must vanish from arm credit
-    const r = interleaveReport(db);
+    const r = interleaveReport(db, PILOT);
     const mix = r.arms.find(a => a.arm === "mix")!;
     const kw = r.arms.find(a => a.arm === "keyword")!;
     assert.equal(mix.down, 0, "explore 👎 not charged to mix");
@@ -350,5 +354,67 @@ describe("M11 interleave report (read-only math)", () => {
     assert.equal(mix.credits, 0, "no debit from the arm-NULL 👎");
     assert.equal(kw.credits, 0, "no debit from the arm-NULL 👎");
     assert.equal(r.judged, 0, "an arm-NULL 👎 is never attributed → never counts toward the floor");
+  });
+
+  it("cross-arm re-serve: open AND vote both key to the FIRST drafting arm (no split attribution)", () => {
+    // T is drafted by mix on day 1, RE-drafted by keyword on day 2, then opened and 👍'd after the
+    // re-serve. Under the old latest-serve-before-vote join the open credited mix (first serve) but
+    // the 👍 credited keyword — numerator and denominator on different arms. Both must key to mix.
+    const db = new DatabaseSync(":memory:");
+    db.exec(`
+      CREATE TABLE digest_log (rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+        digest_date TEXT, channel TEXT, tweet_id TEXT, rank INTEGER, lane TEXT, score REAL, parts TEXT, ts TEXT, arm TEXT);
+      CREATE TABLE digest_opens (rowid INTEGER PRIMARY KEY AUTOINCREMENT, tweet_id TEXT, ts TEXT);
+      CREATE TABLE reviews (rowid INTEGER PRIMARY KEY AUTOINCREMENT, tweet_id TEXT, verdict INTEGER, ts TEXT);
+    `);
+    const serve = db.prepare("INSERT INTO digest_log (digest_date,channel,tweet_id,rank,lane,score,parts,ts,arm) VALUES (?,?,?,?,?,1.0,'{}',?,?)");
+    serve.run("2026-07-06", "web", "T", 1, "taste", "2026-07-06T08:00:00Z", "mix");
+    serve.run("2026-07-07", "web", "T", 2, "taste", "2026-07-07T08:00:00Z", "keyword"); // cross-arm re-serve
+    serve.run("2026-07-07", "web", "K", 3, "taste", "2026-07-07T08:00:00Z", "keyword");
+    db.prepare("INSERT INTO digest_opens (tweet_id, ts) VALUES (?,?)").run("T", "2026-07-07T09:00:00Z");
+    db.prepare("INSERT INTO reviews (tweet_id, verdict, ts) VALUES (?,?,?)").run("T", 1, "2026-07-07T09:05:00Z");
+    const r = interleaveReport(db, PILOT);
+    const mix = r.arms.find(a => a.arm === "mix")!;
+    const kw = r.arms.find(a => a.arm === "keyword")!;
+    assert.equal(mix.served, 1, "T's exposure is its first (mix) serve; the re-serve doesn't re-count");
+    assert.equal(mix.opened, 1, "open keys to the first serve");
+    assert.equal(mix.up, 1, "the 👍 keys to the SAME first serve, not the later keyword re-serve");
+    assert.equal(kw.up, 0, "keyword gets no credit for re-serving mix's pick");
+    assert.equal(kw.served, 1, "keyword's own serve (K) still counts");
+    assert.equal(mix.credits, 2, "opens(1) + 👍(1) all on one arm — coherent numerator/denominator");
+  });
+
+  it("confirmatory window: pilot serves are excluded; below the horizon the CI does not print (no peeking)", () => {
+    // One pilot day (before WINDOW_START) plus two in-window days with plenty of judged events —
+    // enough to clear the 30-event floor, but 2 < HORIZON_DAYS, so the report must show coverage
+    // and REFUSE the CI/lean until the predeclared read.
+    const db = new DatabaseSync(":memory:");
+    db.exec(`
+      CREATE TABLE digest_log (rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+        digest_date TEXT, channel TEXT, tweet_id TEXT, rank INTEGER, lane TEXT, score REAL, parts TEXT, ts TEXT, arm TEXT);
+      CREATE TABLE digest_opens (rowid INTEGER PRIMARY KEY AUTOINCREMENT, tweet_id TEXT, ts TEXT);
+      CREATE TABLE reviews (rowid INTEGER PRIMARY KEY AUTOINCREMENT, tweet_id TEXT, verdict INTEGER, ts TEXT);
+    `);
+    const serve = db.prepare("INSERT INTO digest_log (digest_date,channel,tweet_id,rank,lane,score,parts,ts,arm) VALUES (?,?,?,?,?,1.0,'{}',?,?)");
+    const open = db.prepare("INSERT INTO digest_opens (tweet_id, ts) VALUES (?,?)");
+    // Pilot day — before the window; must not appear anywhere in the report.
+    serve.run("2026-07-10", "web", "P1", 1, "taste", "2026-07-10T08:00:00Z", "mix");
+    open.run("P1", "2026-07-10T09:00:00Z");
+    // Two in-window days, 20 opened serves each → 40 judged events (over the floor), but only 2 days.
+    for (const [day, n] of [["2026-07-16", 20], ["2026-07-17", 20]] as const) {
+      for (let i = 0; i < n; i++) {
+        const arm = i % 2 === 0 ? "mix" : "keyword";
+        serve.run(day, "web", `${day}-${i}`, i + 1, "taste", `${day}T08:00:00Z`, arm);
+        open.run(`${day}-${i}`, `${day}T09:00:00Z`);
+      }
+    }
+    const r = interleaveReport(db); // frozen defaults: WINDOW_START / HORIZON_DAYS
+    const total = r.arms.reduce((s, a) => s + a.served, 0);
+    assert.equal(total, 40, "pilot serve P1 (pre-window) is excluded from the window read");
+    assert.ok(r.judged >= JUDGED_FLOOR, `floor met (${r.judged}) — the refusal below is horizon-driven, not floor-driven`);
+    assert.ok(!r.diffCI, "no CI before the predeclared horizon — no peeking");
+    assert.match(r.verdict, new RegExp(`confirmatory window day 2/${HORIZON_DAYS}`));
+    assert.match(r.verdict, /NO PEEKING/);
+    assert.ok(WINDOW_START > "2026-07-14", "the window starts after the freeze date");
   });
 });

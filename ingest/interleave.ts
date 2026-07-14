@@ -20,7 +20,12 @@
 // the only judgments; below the floor the point estimate is noise) — prints the count and the floor,
 // loudly. (2) The lean is a paired seeded-bootstrap CI over DAYS (the independent trials); a CI that
 // straddles 0 prints TIED, same doctrine as eval.ts's diff CI. (3) Coverage counts always print, so
-// a thin comparison reads as thin by construction. Determinism: seeded PRNG, NO Math.random.
+// a thin comparison reads as thin by construction. (4) CONFIRMATORY WINDOW (frozen 2026-07-14):
+// serves before WINDOW_START were the pilot — the credit formula changed mid-flight while watching
+// them, so they can't verdict. The window reads only in-window serves, and the CI prints ONCE, at
+// the predeclared HORIZON_DAYS — never "run until the CI excludes 0" (optional stopping manufactures
+// leans). If the judged floor isn't met at the horizon, the window EXTENDS on n, never on the lean.
+// Determinism: seeded PRNG, NO Math.random.
 import type { DatabaseSync } from "node:sqlite";
 
 // Below this many judged events (opens + attributed votes, summed over both arms), NO verdict is
@@ -28,21 +33,33 @@ import type { DatabaseSync } from "node:sqlite";
 // the plan pins the floor at 30. Coverage still prints so you can watch it climb toward the floor.
 export const JUDGED_FLOOR = 30;
 
-// Arm-attributed FIRST serve per tweet: the earliest serve that a team drafted (arm IS NOT NULL).
-// funnel.ts's FIRST_SERVE doctrine — exposure = first sight, re-serves don't re-count — scoped to
-// interleaved serves. SQLite's bare-column-with-MIN rule pins arm/digest_date to that first row.
+// Confirmatory window, predeclared 2026-07-14 (same freeze as eval.ts's GATE_CUTOFF): matchup
+// mix-vs-keyword, credit = opens + 👍 − 👎, floor 30 — all frozen BEFORE any in-window serve.
+// Serves with digest_date before WINDOW_START are the pilot (formula chosen watching them) and are
+// excluded. The CI reads once, when HORIZON_DAYS distinct digest days have served in-window.
+// Changing the matchup, the credit formula, or the floor restarts the window at a new start date.
+export const WINDOW_START = "2026-07-15";
+export const HORIZON_DAYS = 14;
+
+// Arm-attributed FIRST serve per tweet within the window: the earliest in-window serve that a team
+// drafted (arm IS NOT NULL). funnel.ts's FIRST_SERVE doctrine — exposure = first sight, re-serves
+// don't re-count — scoped to interleaved serves. SQLite's bare-column-with-MIN rule pins
+// arm/digest_date to that first row. The `?` is windowStart (a pilot tweet re-drafted in-window
+// counts as a fresh in-window exposure — its judgments happen in the window).
 const ARM_FIRST_SERVE = `
   SELECT tweet_id, arm, digest_date, MIN(ts) AS ts
-  FROM digest_log WHERE arm IS NOT NULL GROUP BY tweet_id`;
-// A vote's context = the latest ARM-attributed serve at-or-before the vote (the interleaved slate it
-// was cast against), latest verdict per tweet (labels.ts convention). funnel.ts's VOTE_SERVE, scoped
-// to arm rows so the drafting arm is well-defined. Votes with no prior arm-attributed serve (review
-// mode, pre-M11 non-interleaved serves) don't join — honestly excluded, same as the funnel.
+  FROM digest_log WHERE arm IS NOT NULL AND digest_date >= ? GROUP BY tweet_id`;
+// A vote's context = the arm-attributed FIRST serve (same row opens key to — numerator and
+// denominator stay on one arm even when the OTHER arm re-serves the tweet later; the old
+// latest-serve-before-vote join could credit an open to arm A and the vote to arm B). Latest
+// verdict per tweet (labels.ts convention); a vote counts only if it lands at-or-after that first
+// serve — "first serve ≤ vote" is exactly "some arm serve ≤ vote", so the same votes qualify as
+// before (scorecard.ts's doctrine). Votes with no prior arm-attributed serve (review mode,
+// pre-M11/pilot serves) don't join — honestly excluded, same as the funnel.
 const VOTE_ARM_SERVE = `
-  SELECT v.verdict, dl.arm, dl.digest_date
+  SELECT v.verdict, fs.arm, fs.digest_date
   FROM (SELECT tweet_id, verdict, MAX(ts) AS ts FROM reviews GROUP BY tweet_id) v
-  JOIN digest_log dl ON dl.tweet_id = v.tweet_id AND dl.arm IS NOT NULL AND dl.ts =
-    (SELECT MAX(ts) FROM digest_log WHERE tweet_id = v.tweet_id AND arm IS NOT NULL AND ts <= v.ts)`;
+  JOIN (${ARM_FIRST_SERVE}) fs ON fs.tweet_id = v.tweet_id AND fs.ts <= v.ts`;
 
 export interface ArmRow {
   arm: string;
@@ -105,7 +122,11 @@ function emptyReport(reason: string): InterleaveReport {
   return { arms: [], dayWins: [], tiedDays: 0, judged: 0, matchup: null, verdict: reason };
 }
 
-export function interleaveReport(db: DatabaseSync): InterleaveReport {
+// opts exist for tests and post-hoc pilot reads; the CLI always runs the frozen window.
+export function interleaveReport(
+  db: DatabaseSync, opts: { windowStart?: string; horizonDays?: number } = {},
+): InterleaveReport {
+  const { windowStart = WINDOW_START, horizonDays = HORIZON_DAYS } = opts;
   // Tolerate a db whose digest_log predates the M11 `arm` column (real afy.db until the server
   // restarts with the additive migration): no column → no interleaved serves yet. Read-only —
   // we detect via PRAGMA rather than letting `arm IS NOT NULL` throw "no such column".
@@ -122,12 +143,12 @@ export function interleaveReport(db: DatabaseSync): InterleaveReport {
     WITH fs AS (${ARM_FIRST_SERVE})
     SELECT fs.arm AS arm, COUNT(*) AS served, COUNT(DISTINCT o.tweet_id) AS opened
     FROM fs LEFT JOIN digest_opens o ON o.tweet_id = fs.tweet_id AND o.ts >= fs.ts
-    GROUP BY fs.arm`).all() as { arm: string; served: number; opened: number }[];
+    GROUP BY fs.arm`).all(windowStart) as { arm: string; served: number; opened: number }[];
   // Per-arm vote tallies from the arm-scoped vote-serve join.
   const votes = db.prepare(`
     WITH vs AS (${VOTE_ARM_SERVE})
     SELECT arm, SUM(verdict = 1) AS up, SUM(verdict = -1) AS down FROM vs GROUP BY arm`)
-    .all() as { arm: string; up: number | null; down: number | null }[];
+    .all(windowStart) as { arm: string; up: number | null; down: number | null }[];
 
   const upByArm = new Map(votes.map(v => [v.arm, Number(v.up ?? 0)]));
   const downByArm = new Map(votes.map(v => [v.arm, Number(v.down ?? 0)]));
@@ -144,17 +165,17 @@ export function interleaveReport(db: DatabaseSync): InterleaveReport {
     SELECT fs.arm AS arm, fs.digest_date AS digest_date, COUNT(*) AS served,
       COUNT(DISTINCT o.tweet_id) AS opened
     FROM fs LEFT JOIN digest_opens o ON o.tweet_id = fs.tweet_id AND o.ts >= fs.ts
-    GROUP BY fs.arm, fs.digest_date`).all() as { arm: string; digest_date: string; served: number; opened: number }[];
+    GROUP BY fs.arm, fs.digest_date`).all(windowStart) as { arm: string; digest_date: string; served: number; opened: number }[];
   const dayUp = db.prepare(`
     WITH vs AS (${VOTE_ARM_SERVE})
     SELECT arm, digest_date, SUM(verdict = 1) AS up FROM vs GROUP BY arm, digest_date`)
-    .all() as { arm: string; digest_date: string; up: number | null }[];
+    .all(windowStart) as { arm: string; digest_date: string; up: number | null }[];
   // Per-(arm,day) 👎 — mirrors dayUp exactly (same VOTE_ARM_SERVE join, same digest_date keying), so
   // a downvote debits the same day it credits an up. Net per-day credit = opens + 👍 − 👎; may be < 0.
   const dayDown = db.prepare(`
     WITH vs AS (${VOTE_ARM_SERVE})
     SELECT arm, digest_date, SUM(verdict = -1) AS down FROM vs GROUP BY arm, digest_date`)
-    .all() as { arm: string; digest_date: string; down: number | null }[];
+    .all(windowStart) as { arm: string; digest_date: string; down: number | null }[];
   const upByArmDay = new Map(dayUp.map(d => [`${d.arm} ${d.digest_date}`, Number(d.up ?? 0)]));
   const downByArmDay = new Map(dayDown.map(d => [`${d.arm} ${d.digest_date}`, Number(d.down ?? 0)]));
   const armDays: ArmDay[] = dayServeOpen.map(d => {
@@ -195,16 +216,23 @@ export function interleaveReport(db: DatabaseSync): InterleaveReport {
   // both arms. THIS is the floor gate: below it, the comparison is noise regardless of any lean.
   const judged = arms.reduce((n, a) => n + a.opened + a.up + a.down, 0);
 
-  // Verdict. Floor first (loud, no lean below it), then the paired-bootstrap CI: straddles 0 → TIED,
-  // excludes 0 → a real lean toward the arm on the positive side of the (armA − armB) diff.
+  // Verdict. Horizon first (NO PEEKING — the CI prints once, at the predeclared read), then the
+  // floor (loud, no lean below it; the window extends on n, never on the lean), then the
+  // paired-bootstrap CI: straddles 0 → TIED, excludes 0 → a real lean toward the arm on the
+  // positive side of the (armA − armB) diff. Either way the horizon read is the window's ANSWER —
+  // never "keep serving until it excludes 0" (optional stopping manufactures leans).
+  const daysServed = new Set(dayServeOpen.map(d => d.digest_date)).size;
   let diffCI: InterleaveReport["diffCI"];
   let verdict: string;
   if (!matchup) {
     verdict = arms.length < 2
-      ? `insufficient data — only ${arms.length} arm(s) with interleaved serves; need 2 (set digest.ts MATCHUP and serve some digests).`
+      ? `insufficient data — only ${arms.length} arm(s) with interleaved serves in the window (since ${windowStart}); need 2 (set digest.ts MATCHUP and serve some digests).`
       : `unsupported — ${arms.length} arms present; interleaving compares exactly 2.`;
+  } else if (daysServed < horizonDays) {
+    verdict = `confirmatory window day ${daysServed}/${horizonDays} (serves since ${windowStart}; ${judged} judged events so far, floor ${JUDGED_FLOOR}) — ` +
+      `NO PEEKING: the CI reads once, when ${horizonDays} digest days have served.`;
   } else if (judged < JUDGED_FLOOR) {
-    verdict = `insufficient data (${judged} judged events, floor ${JUDGED_FLOOR}) — serve more interleaved digests and read/vote on them, then re-run.`;
+    verdict = `insufficient data (${judged} judged events, floor ${JUDGED_FLOOR}) — the window stays open until the floor is met (extension is n-based, never lean-based); then the CI reads once.`;
   } else {
     const [armA, armB] = matchup;
     const diff = bootstrapDiff(armDays, armA, armB);
@@ -214,10 +242,11 @@ export function interleaveReport(db: DatabaseSync): InterleaveReport {
     // two arms with identical credit rates every day (no difference is a tie, not a lean). A lean
     // requires the whole CI strictly to one side of 0.
     if (lo <= 0 && hi >= 0) {
-      verdict = `TIED at n=${judged} judged events — the (${armA} − ${armB}) credit-rate CI [${lo.toFixed(3)}, ${hi.toFixed(3)}] contains 0. No ranker leads yet; keep serving.`;
+      verdict = `TIED at n=${judged} judged events — the (${armA} − ${armB}) credit-rate CI [${lo.toFixed(3)}, ${hi.toFixed(3)}] contains 0. ` +
+        `That is the window's answer: the arms are indistinguishable on this feed. Freeze a new matchup/window to try again — do NOT extend this one hunting a lean.`;
     } else {
       const lead = lo > 0 ? armA : armB; // whole CI > 0 → armA leads; whole CI < 0 → armB leads
-      verdict = `LEAN ${lead} at n=${judged} judged events — the (${armA} − ${armB}) credit-rate CI [${lo.toFixed(3)}, ${hi.toFixed(3)}] excludes 0. Not proof; let it run toward the ~2-week read.`;
+      verdict = `LEAN ${lead} at n=${judged} judged events — the (${armA} − ${armB}) credit-rate CI [${lo.toFixed(3)}, ${hi.toFixed(3)}] excludes 0 at the predeclared horizon. The window's verdict.`;
     }
   }
 
@@ -236,7 +265,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       "(digest_log's `arm` column fills on the next /digest serve with interleaving on — digest.ts MATCHUP.)");
     process.exit(0);
   }
-  console.log(`\ninterleave — ${totalServed} arm-attributed serves, ${r.judged} judged events (opens + votes)` +
+  console.log(`\ninterleave — confirmatory window since ${WINDOW_START}: ${totalServed} arm-attributed serves, ` +
+    `${r.judged} judged events (opens + votes)` +
     (r.matchup ? `, matchup ${r.matchup[0]} vs ${r.matchup[1]}` : "") + "\n");
   console.log("per-arm credits (credits = opens + 👍 − 👎, credit_rate = credits / served; may be negative):");
   console.table(r.arms);

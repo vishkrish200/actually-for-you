@@ -8,7 +8,7 @@ import { ensureSchema } from "./rubric.ts";
 function seed(): DatabaseSync {
   const db = new DatabaseSync(":memory:");
   db.exec(`
-    CREATE TABLE tweets (tweet_id TEXT PRIMARY KEY, author_id TEXT, author_handle TEXT, author_name TEXT,
+    CREATE TABLE tweets (tweet_id TEXT PRIMARY KEY, author_id TEXT, author_handle TEXT, author_name TEXT, author_profile TEXT,
       text TEXT, media TEXT, quoted_id TEXT, created_at TEXT, captured_at TEXT,
       likes INTEGER, rts INTEGER, replies INTEGER, views INTEGER, source TEXT DEFAULT 'net');
     CREATE TABLE impressions (impression_id TEXT PRIMARY KEY, tweet_id TEXT, session_id TEXT, ts TEXT);
@@ -173,6 +173,37 @@ describe("personalized digest (taste similarity)", () => {
     assert.ok(a.some(i => i.tweet_id === "C_fin" && i.lane === "explore"), "zero-score item reachable via explore");
     assert.equal(a[0]?.lane, "taste", "explore never steals the top slot when taste matches exist");
   });
+
+  // X mints multiple tweet_ids for one posting event (ad-creative copies; organic double-mints
+  // ~200ms apart). Verified live 2026-07-14: one tweet served twice in a single digest run under
+  // two ids. Dedup is content-level (author_id, text) at the candidate stage.
+  it("content twins (same author_id + text, different ids) collapse to one card, organic copy wins", () => {
+    const db = seed();
+    const ins = db.prepare(
+      "INSERT INTO tweets (tweet_id,author_id,author_handle,text,created_at,captured_at,source) VALUES (?,?,?,?,?,?,?)");
+    const text = "this new llm agent model is great at reasoning and planning";
+    ins.run("TW_poll", "a9", "twin", text, "2026-06-01", "2026-06-01", "poll"); // lower id sorts first
+    ins.run("TW_net", "a9", "twin", text, "2026-06-01", "2026-06-01", "net");
+    db.prepare("INSERT INTO impressions (impression_id, tweet_id) VALUES (?,?)").run("TW_net-imp", "TW_net");
+    const items = buildDigest(db, { limit: 10, matchup: null });
+    const copies = items.filter(i => i.text === text);
+    assert.equal(copies.length, 1, `twin served ${copies.length}× — must be exactly once`);
+    assert.equal(copies[0].tweet_id, "TW_net", "the organically-seen copy is the one served");
+    assert.equal((copies[0] as any).source, undefined, "dedup-only source column never reaches the payload");
+  });
+
+  it("reviewing one twin drops BOTH copies — a 👎 can't reappear under its twin id tomorrow", () => {
+    const db = seed();
+    const ins = db.prepare(
+      "INSERT INTO tweets (tweet_id,author_id,author_handle,text,created_at,captured_at,source) VALUES (?,?,?,?,?,?,?)");
+    const text = "this new llm agent model is great at reasoning and planning";
+    ins.run("TW_poll", "a9", "twin", text, "2026-06-01", "2026-06-01", "poll");
+    ins.run("TW_net", "a9", "twin", text, "2026-06-01", "2026-06-01", "net");
+    db.prepare("INSERT INTO impressions (impression_id, tweet_id) VALUES (?,?)").run("TW_net-imp", "TW_net");
+    db.prepare("INSERT INTO reviews (tweet_id, verdict, ts) VALUES (?,?,?)").run("TW_net", -1, "2026-07-01");
+    const items = buildDigest(db, { limit: 10, matchup: null });
+    assert.ok(!items.some(i => i.text === text), "neither twin may survive a review of either");
+  });
 });
 
 describe("M9 weighted mix (named knobs)", () => {
@@ -247,7 +278,7 @@ describe("M9 weighted mix (named knobs)", () => {
     // row lands at index 1 (interleaved, not appended).
     const db = new DatabaseSync(":memory:");
     db.exec(`
-      CREATE TABLE tweets (tweet_id TEXT PRIMARY KEY, author_id TEXT, author_handle TEXT, author_name TEXT,
+      CREATE TABLE tweets (tweet_id TEXT PRIMARY KEY, author_id TEXT, author_handle TEXT, author_name TEXT, author_profile TEXT,
         text TEXT, media TEXT, quoted_id TEXT, created_at TEXT, captured_at TEXT,
         likes INTEGER, rts INTEGER, replies INTEGER, views INTEGER, source TEXT DEFAULT 'net');
       CREATE TABLE impressions (impression_id TEXT PRIMARY KEY, tweet_id TEXT, session_id TEXT, ts TEXT);

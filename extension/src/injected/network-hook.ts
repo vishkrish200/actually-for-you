@@ -87,17 +87,91 @@ function parseTweetResult(result: Record<string, unknown>): TweetRecord | null {
     ?.note_tweet_results as Record<string, unknown>)
     ?.result as Record<string, unknown>)?.text;
 
+  // Link-card embed (external URL preview): title/domain/thumbnail live in card.legacy
+  // .binding_values as {key, value} pairs. Shipped as a media item (type:'card') so no
+  // schema/server change is needed — the media JSON is stored and parsed opaquely.
+  const bindings = (((result.card as Record<string, unknown>)?.legacy as Record<string, unknown>)
+    ?.binding_values ?? []) as Array<Record<string, unknown>>;
+  const bind = (k: string) => (bindings.find(b => b.key === k)?.value ?? {}) as Record<string, unknown>;
+  const cardTitle = bind("title").string_value;
+  const cardImg = (bind("thumbnail_image_original").image_value
+    ?? bind("summary_photo_image_original").image_value
+    ?? bind("photo_image_full_size_original").image_value) as Record<string, unknown> | undefined;
+  const card = cardTitle ? [{
+    type: "card" as const,
+    url: String(cardImg?.url ?? ""),
+    title: String(cardTitle),
+    domain: String(bind("vanity_url").string_value ?? bind("domain").string_value ?? ""),
+    link: String(bind("card_url").string_value ?? ""),
+  }] : [];
+
+  // X Article (long-form editorial): title/preview/cover live at result.article.article_results
+  // .result — legacy.full_text for these is just "Title + t.co", so without this the tweet looks
+  // empty. Same media-JSON ride as the link card; link opens the tweet where the article renders.
+  const artResult = (((result.article as Record<string, unknown>)
+    ?.article_results as Record<string, unknown>)
+    ?.result as Record<string, unknown> | undefined);
+  const artCover = (((artResult?.cover_media as Record<string, unknown>)
+    ?.media_info as Record<string, unknown>)?.original_img_url);
+  const article = artResult?.title ? [{
+    type: "article" as const,
+    url: String(artCover ?? ""),
+    title: String(artResult.title),
+    preview: String(artResult.preview_text ?? ""),
+    link: `https://x.com/i/web/status/${tweet_id}`,
+  }] : [];
+
+  // Author identity beyond name+avatar, for the digest's badges + hover card: verification
+  // (blue check / gold Business / gray Government), the affiliation badge (the small org logo
+  // next to some names), bio, and follower counts. Same dual-read drift-proofing: verification
+  // moved from result-level is_blue_verified / legacy.verified_type toward a `verification`
+  // object, bio from legacy.description toward profile_bio.description. All fields optional —
+  // an absent user object just yields no profile, never a parse failure.
+  const verification = userResult?.verification as Record<string, unknown> | undefined;
+  const verifiedType = verification?.verified_type ?? userLegacy?.verified_type; // "Business" | "Government"
+  const blueVerified = Boolean(verification?.verified ?? userResult?.is_blue_verified);
+  const affLabel = (userResult?.affiliates_highlighted_label as Record<string, unknown>)
+    ?.label as Record<string, unknown> | undefined;
+  const bio = String((userResult?.profile_bio as Record<string, unknown>)?.description
+    ?? userLegacy?.description ?? "");
+  const counts = userResult?.relationship_counts as Record<string, unknown> | undefined;
+  const followers = Number(userLegacy?.followers_count ?? counts?.followers ?? 0);
+  const following = Number(userLegacy?.friends_count ?? counts?.following ?? 0);
+  const author_profile = (blueVerified || verifiedType || affLabel || bio || followers) ? {
+    verified: blueVerified || Boolean(verifiedType),
+    ...(verifiedType ? { verified_type: String(verifiedType) } : {}),
+    ...(affLabel ? { affiliate: {
+      badge: String((affLabel.badge as Record<string, unknown>)?.url ?? ""),
+      title: String(affLabel.description ?? ""),
+    } } : {}),
+    ...(bio ? { bio } : {}),
+    followers, following,
+  } : undefined;
+
   return {
     tweet_id,
     author_handle: String(userCore?.screen_name ?? userLegacy?.screen_name ?? ""),
     author_name: String(userCore?.name ?? userLegacy?.name ?? ""),
     author_avatar: String(userAvatar?.image_url ?? userLegacy?.profile_image_url_https ?? ""),
     author_id: String(userResult?.rest_id ?? ""),
+    author_profile,
     text: String(noteText ?? legacy.full_text ?? legacy.text ?? ""),
-    media: mediaItems.map(m => ({
-      type: String(m.type) as "photo" | "video" | "gif",
-      url: String(m.media_url_https ?? m.media_url ?? ""),
-    })),
+    media: [
+      ...mediaItems.map(m => {
+        // videos/gifs: pick the highest-bitrate mp4 variant so the digest can play inline
+        // (the poster image alone was a dead frame + play badge).
+        const mp4 = (((m.video_info as Record<string, unknown>)?.variants ?? []) as Array<Record<string, unknown>>)
+          .filter(v => v.content_type === "video/mp4")
+          .sort((a, b) => Number(b.bitrate ?? 0) - Number(a.bitrate ?? 0))[0]?.url;
+        return {
+          type: String(m.type) as "photo" | "video" | "gif",
+          url: String(m.media_url_https ?? m.media_url ?? ""),
+          ...(mp4 ? { video: String(mp4) } : {}),
+        };
+      }),
+      ...card,
+      ...article,
+    ],
     quoted_id: quoted?.rest_id ? String(quoted.rest_id) : undefined,
     is_thread: Boolean(legacy.self_thread),
     created_at: String(legacy.created_at ?? ""),
@@ -198,8 +272,13 @@ interface TweetRecord {
   author_name: string;
   author_avatar: string;
   author_id: string;
+  author_profile?: {
+    verified: boolean; verified_type?: string;
+    affiliate?: { badge: string; title: string };
+    bio?: string; followers?: number; following?: number;
+  };
   text: string;
-  media: { type: "photo" | "video" | "gif"; url: string }[];
+  media: { type: "photo" | "video" | "gif" | "card" | "article"; url: string; video?: string; title?: string; preview?: string; domain?: string; link?: string }[];
   is_thread: boolean;
   created_at: string;
   metrics: { likes: number; rts: number; replies: number; views?: number };

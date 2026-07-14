@@ -7,9 +7,7 @@ signals (dwell, detail-opens, engagements) + tweet content; an ingest server (`i
 them append-only in sqlite and serves a ranked daily digest.
 
 **Status lives in [PROGRESS.md](PROGRESS.md) — read its "RESUME HERE" block, don't trust
-milestone claims here.** (M0–M6 done; M6 verdict: HOLD — learned ranker doesn't beat the
-keyword baseline on the non-circular gate. M7–M10 "backscroll build-out" in flight: the roadmap
-section in PROGRESS.md is the plan of record; one phase at a time, user approves between phases.)
+milestone claims here.** Work proceeds one phase at a time; the user approves between phases.
 
 ## Critical invariants — never violate
 
@@ -30,21 +28,46 @@ section in PROGRESS.md is the plan of record; one phase at a time, user approves
 - `afy.db`, `model.json`, `.env.local` are personal data — gitignored, never commit them.
   `ducky-cli/` is an unrelated project accidentally nested here — never commit it.
 
-## Ship gate (M13 rebuild 2026-07-08 — eval.ts)
+## Ship gate (M13 rebuild 2026-07-08; prospective freeze 2026-07-14 — eval.ts)
 
 The offline gate is a **guardrail**; the online interleave (`npm run interleave`, M11 — net
 credit = opens + 👍 − 👎, may go negative) is the verdict-maker. Gate metric: **pairwise
-preference accuracy (AUC)** over ALL hand-signed 👍/👎 pairs — no balancing, no split, nothing
-trains (reviews are 100% test). A candidate clears ONLY by beating keyword on all-pairs AUC
-**with a paired (arm − keyword) item-bootstrap diff CI excluding 0** — a CI straddling 0 = TIED,
-not a win. Advisory cuts printed alongside, never the gate: keyword-tied pairs (where keyword is
-structurally blind) and the ✧ explore-audit pool (serve-bias-free; where it disagrees with the
-main pool at real n, trust the audit). The judge-calibration table (per-`rubric_sha` AUC vs
-votes) evaluates RUBRIC.md edits directly — NEVER iterate the rubric against it or tune weights
-against any offline pool; the interleave is where rankers earn their keep. v1 LR arms and the
-same-era/full pools are deleted (LR-era scaffolding; git remembers; `ranker_v1.ts` survives only
-as the hashStr home). Product pulse: `npm run scorecard` (per-digest-day junk@K/hits/lanes);
-recall side: `npm run recall` (organic engagements the digest never served — lower-bound).
+preference accuracy (AUC)** over hand-signed 👍/👎 pairs — no balancing, nothing trains on
+reviews. A candidate clears ONLY by beating the **strongest baseline**
+(recency/char_len/keyword/author-prior — picked per pool by point AUC, keyword on ties; random is
+reference-ineligible, its deviation from 0.5 is seed luck) on all-pairs AUC **with a paired
+(arm − baseline) item-bootstrap diff CI excluding 0** — a CI straddling 0 = TIED, not a win.
+
+**Prospective split (frozen 2026-07-14, `GATE_CUTOFF = 2026-07-15`):** every vote cast before
+the cutoff is the **DEV pool** — the metric (MAP→AUC), the credit formula, and the
+strongest-baseline policy were all chosen while inspecting those votes, so no CI on them
+accounts for that; they print as an advisory regression read and can NEVER verdict. Only
+post-cutoff votes feed the gate. Move the cutoff only forward, and only when re-freezing after
+a deliberate gate-design change.
+
+**Interleave confirmatory window (frozen 2026-07-14, `WINDOW_START = 2026-07-15`,
+`HORIZON_DAYS = 14`):** everything before the window is the pilot (the credit formula changed
+mid-flight watching it; final pilot read: TIED at n=83). In-window, the CI prints ONCE, at the
+predeclared horizon — never "run until it excludes 0" (optional stopping manufactures leans).
+If the 30-judged-event floor isn't met at the horizon the window extends on n, never on the
+lean. Opens AND votes both key to a tweet's arm-attributed FIRST serve (a cross-arm re-serve
+must not split numerator and denominator). Changing matchup/formula/floor restarts the window.
+
+The author-prior arm (M9 prior run solo, engagement_labels only) is the behavior-only bar:
+"does content modeling add anything over WHO posted?" — a baseline, never a shipper.
+Advisory cuts printed alongside, never the gate: keyword-tied pairs (where keyword is
+structurally blind) and the ✧ explore-audit pool — a **ranker-blind-spot** read (cards sampled
+from what the rankers did NOT pick; no arm scored them into the slate, but it is NOT an
+unbiased sample of the candidate pool — eligibility is conditioned on rejection). The
+judge-calibration table (per-`rubric_sha` AUC vs votes) evaluates RUBRIC.md edits directly —
+NEVER iterate the rubric against it or tune weights against any offline pool; the interleave is
+where rankers earn their keep. Offline pool AUC replays TODAY's formula over pooled votes — it
+is not the historical ranker's measured performance and says nothing about top-K. v1 LR arms
+and the same-era/full pools are deleted (LR-era scaffolding; git remembers; `ranker_v1.ts`
+survives only as the hashStr home). Product pulse: `npm run scorecard` — junk@K is 👎 **among
+judged** cards at the cut with coverage printed beside it (a no-vote day reads "no votes",
+never 0%); recall side: `npm run recall` (organic engagements the digest never served —
+lower-bound).
 
 ## Two packages, different toolchains (don't mix them up)
 
@@ -53,7 +76,7 @@ recall side: `npm run recall` (organic engagements the digest never served — l
   worker is ephemeral, durable state in IndexedDB.
 - **`ingest/`** — zero-dependency Node (`node --experimental-strip-types`), **node:test**.
   Scripts: `npm test`, `npm run eval` (ship gate), `labels`, `digest`, `daily`, `probe`, `funnel`,
-  `interleave`, `scorecard`, `recall`.
+  `interleave`, `scorecard`, `recall`, `rubric`.
   DB path via `AFY_DB` (default `afy.db`); run from `ingest/`. Stays zero-dep: the M8 rubric
   scorer shells out to the local **`claude` CLI in headless mode** (`claude -p`, billed to the
   user's Claude subscription — NO API key, no SDK, node:child_process is stdlib). Binary via

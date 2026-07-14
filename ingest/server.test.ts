@@ -147,6 +147,46 @@ describe("ingest server", () => {
     assert.equal(row.source, "dom");
   });
 
+  it("same source + longer text upgrades (heals pre-note_tweet truncated rows)", async () => {
+    const short = { ...tweet, tweet_id: "lf1", text: "truncated at a", source: "net" };
+    await post({ tweets: [short] });
+    const long = { ...tweet, tweet_id: "lf1", text: "truncated at a $10B valuation — the full note_tweet text", source: "net" };
+    await post({ tweets: [long] });
+    const row = db.prepare("SELECT text, source FROM tweets WHERE tweet_id='lf1'").get() as any;
+    assert.equal(row.text, long.text);
+    assert.equal(row.source, "net");
+  });
+
+  it("same source + shorter/equal text does NOT replace", async () => {
+    const long = { ...tweet, tweet_id: "lf2", text: "the full long-form text of the tweet", source: "net" };
+    await post({ tweets: [long] });
+    await post({ tweets: [{ ...tweet, tweet_id: "lf2", text: "shorter", source: "net" }] });
+    await post({ tweets: [{ ...tweet, tweet_id: "lf2", text: "x".repeat(long.text.length), source: "net" }] });
+    const row = db.prepare("SELECT text FROM tweets WHERE tweet_id='lf2'").get() as any;
+    assert.equal(row.text, long.text);
+  });
+
+  it("author_profile persists as JSON and survives an upgrade from a profile-less capture", async () => {
+    const profile = { verified: true, verified_type: "Business", bio: "hi", followers: 9, following: 2 };
+    await post({ tweets: [{ ...tweet, tweet_id: "ap1", text: "short", source: "net", author_profile: profile }] });
+    let row = db.prepare("SELECT author_profile FROM tweets WHERE tweet_id='ap1'").get() as any;
+    assert.deepEqual(JSON.parse(row.author_profile), profile);
+    // longer-text upgrade from an older extension build (no author_profile) keeps the stored one
+    await post({ tweets: [{ ...tweet, tweet_id: "ap1", text: "much longer replacement text", source: "net" }] });
+    row = db.prepare("SELECT text, author_profile FROM tweets WHERE tweet_id='ap1'").get() as any;
+    assert.equal(row.text, "much longer replacement text");
+    assert.deepEqual(JSON.parse(row.author_profile), profile);
+  });
+
+  it("longer text at a WEAKER source still loses (poll never clobbers net)", async () => {
+    const net = { ...tweet, tweet_id: "lf3", text: "net short", source: "net" };
+    await post({ tweets: [net] });
+    await post({ tweets: [{ ...tweet, tweet_id: "lf3", text: "a much much longer polled version of the text", source: "poll" }] });
+    const row = db.prepare("SELECT text, source FROM tweets WHERE tweet_id='lf3'").get() as any;
+    assert.equal(row.text, "net short");
+    assert.equal(row.source, "net");
+  });
+
   it("M7 regression: a tweet with NO source still defaults to 'net'", async () => {
     // The `tweet` fixture carries no source field — must behave exactly as pre-M7.
     const bare = { ...tweet, tweet_id: "bare1", text: "no-source" };

@@ -21,10 +21,17 @@
 // first serve and attribute to the first-serve date (a tweet opened two days later still credits the
 // day it was first served).
 //
-// Honest-output doctrine: every rate prints the n behind it (junk@k carries its down/total fraction;
-// up/down/opens sit next to `served`). A day with 3 votes must read as thin, not as a trend. Rates
-// guard div-by-zero (0 tweets at a cut → a dash, never NaN). Read-only: like funnel/eval/interleave
-// this never CREATEs/ALTERs — a db predating digest_log reports "nothing served yet" and exits 0.
+// Honest-output doctrine: every rate prints the n behind it (junk@k carries its down/judged
+// fraction; up/down/opens sit next to `served`). A day with 3 votes must read as thin, not as a
+// trend. Rates guard div-by-zero (0 tweets at a cut → a dash, never NaN). Read-only: like
+// funnel/eval/interleave this never CREATEs/ALTERs — a db predating digest_log reports "nothing
+// served yet" and exits 0.
+//
+// junk@k denominator doctrine: the HEADLINE junk rate is 👎 / JUDGED cards at the cut, not 👎 / all
+// served cards. Dividing by every serve made a no-vote day read as 0% junk — quality "improving"
+// because voting stopped. The judged rate can't fake that (no votes → a dash), and the `judged`
+// coverage column says how much of the slate the rate is even about. (The judged subset is still
+// response-selected — you vote on what catches your eye — so read it with the coverage beside it.)
 import type { DatabaseSync } from "node:sqlite";
 
 // A tweet's exposure context = its FIRST logged serve. Bare rank/lane/digest_date pin to the MIN(ts)
@@ -37,16 +44,18 @@ interface DayRaw {
   served: number;
   up: number; down: number;
   opens: number;
-  j10_down: number; j10_n: number; // 👎 among first-served-that-day at rank≤10, over that count
-  j20_down: number; j20_n: number; // …at rank≤20
+  j10_down: number; j10_n: number; j10_v: number; // 👎 / all first-served-that-day at rank≤10 / judged among them
+  j20_down: number; j20_n: number; j20_v: number; // …at rank≤20
   exp_up: number; exp_down: number;   // explore-lane (✧) verdicts, first-serve lane
   core_up: number; core_down: number; // non-explore verdicts
 }
 
 export interface DayRow extends DayRaw {
   hits: number;             // = up — the report-card's "good serve" tally (a 👍 on a first-served tweet)
-  j10: number | null;       // junk@10 rate, null when j10_n === 0 (dash at print)
-  j20: number | null;       // junk@20 rate, null when j20_n === 0
+  j10: number | null;       // 👎-per-SERVE at ≤10 (yield), null when j10_n === 0 (dash at print)
+  j20: number | null;       // 👎-per-serve at ≤20
+  j10j: number | null;      // 👎-per-JUDGED at ≤10 — the headline junk rate; null when j10_v === 0
+  j20j: number | null;      // 👎-per-judged at ≤20
 }
 
 export type Scorecard =
@@ -64,6 +73,8 @@ function finish(r: DayRaw): DayRow {
     hits: r.up,
     j10: r.j10_n ? r.j10_down / r.j10_n : null,
     j20: r.j20_n ? r.j20_down / r.j20_n : null,
+    j10j: r.j10_v ? r.j10_down / r.j10_v : null,
+    j20j: r.j20_v ? r.j20_down / r.j20_v : null,
   };
 }
 
@@ -98,8 +109,10 @@ export function scorecard(db: DatabaseSync): Scorecard {
       SUM(CASE WHEN v = -1 THEN 1 ELSE 0 END) AS down,
       SUM(opened) AS opens,
       SUM(CASE WHEN rank <= 10 THEN 1 ELSE 0 END) AS j10_n,
+      SUM(CASE WHEN rank <= 10 AND v IS NOT NULL THEN 1 ELSE 0 END) AS j10_v,
       SUM(CASE WHEN rank <= 10 AND v = -1 THEN 1 ELSE 0 END) AS j10_down,
       SUM(CASE WHEN rank <= 20 THEN 1 ELSE 0 END) AS j20_n,
+      SUM(CASE WHEN rank <= 20 AND v IS NOT NULL THEN 1 ELSE 0 END) AS j20_v,
       SUM(CASE WHEN rank <= 20 AND v = -1 THEN 1 ELSE 0 END) AS j20_down,
       SUM(CASE WHEN lane = 'explore' AND v = 1 THEN 1 ELSE 0 END) AS exp_up,
       SUM(CASE WHEN lane = 'explore' AND v = -1 THEN 1 ELSE 0 END) AS exp_down,
@@ -110,7 +123,8 @@ export function scorecard(db: DatabaseSync): Scorecard {
   const days = raw.map(finish);
   // TOTAL line: sum every count across days, then re-derive rates globally.
   const z: DayRaw = { date: "TOTAL", served: 0, up: 0, down: 0, opens: 0,
-    j10_down: 0, j10_n: 0, j20_down: 0, j20_n: 0, exp_up: 0, exp_down: 0, core_up: 0, core_down: 0 };
+    j10_down: 0, j10_n: 0, j10_v: 0, j20_down: 0, j20_n: 0, j20_v: 0,
+    exp_up: 0, exp_down: 0, core_up: 0, core_down: 0 };
   for (const d of raw) for (const k of Object.keys(z) as (keyof DayRaw)[])
     if (k !== "date") (z[k] as number) += Number(d[k] ?? 0);
   return { present: true, days, totals: finish(z) };
@@ -118,17 +132,19 @@ export function scorecard(db: DatabaseSync): Scorecard {
 
 // ── CLI ──────────────────────────────────────────────────────────────────────────────────────────
 const pct = (r: number) => `${(r * 100).toFixed(1)}%`;
-// junk cell: rate with its down/total fraction so the n is always visible; dash when no tweets at the
-// cut (never NaN). e.g. "50.0% (1/2)" or "— (0/0)".
-const junk = (rate: number | null, down: number, n: number) => n === 0 ? `— (0/0)` : `${pct(rate!)} (${down}/${n})`;
+// junk cell: 👎-per-JUDGED with the judged n visible; a day with tweets at the cut but no votes
+// reads "no votes (0/n jdg)" — never a fake 0%. No tweets at the cut at all → a dash.
+const junk = (down: number, n: number, v: number) =>
+  n === 0 ? `—` : v === 0 ? `no votes (0/${n} srv)` : `${pct(down / v)} (${down}/${v} jdg)`;
 
 function render(row: DayRow) {
   return {
     date: row.date,
     served: row.served,
+    judged: `${row.up + row.down}/${row.served}`, // coverage: how much of the slate the rates below are about
     up: row.up, down: row.down, hits: row.hits,
-    "junk@10": junk(row.j10, row.j10_down, row.j10_n),
-    "junk@20": junk(row.j20, row.j20_down, row.j20_n),
+    "junk@10": junk(row.j10_down, row.j10_n, row.j10_v),
+    "junk@20": junk(row.j20_down, row.j20_n, row.j20_v),
     opens: row.opens,
     "✧ up/dn": `${row.exp_up}/${row.exp_down}`,
     "core up/dn": `${row.core_up}/${row.core_down}`,
@@ -145,7 +161,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   }
   console.log(`\ndigest scorecard — ${r.totals.served} tweets first-served over ${r.days.length} day(s), ` +
     `${r.totals.up} 👍 / ${r.totals.down} 👎, ${r.totals.opens} opens\n` +
-    `(junk@k = 👎 among first-served-that-day at rank≤k; ✧/core = explore vs non-explore lane; ` +
-    `every rate prints its n — thin days read as thin)\n`);
+    `(junk@k = 👎 among JUDGED first-serves at rank≤k — a no-vote day reads "no votes", never 0%; ` +
+    `judged = votes/served coverage; ✧/core = explore vs non-explore lane; the judged subset is ` +
+    `response-selected — read every rate with its coverage)\n`);
   console.table([...r.days.map(render), render(r.totals)]);
 }

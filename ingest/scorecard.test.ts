@@ -79,17 +79,34 @@ describe("digest scorecard", () => {
     assert.equal(d.opens, 1);           // E, opened next day, attributes here
   });
 
-  it("junk@10 / junk@20 math exactly (down/n at each rank cut, first-serve rank)", () => {
+  it("junk@10 / junk@20 math exactly (👎 / served / judged at each rank cut, first-serve rank)", () => {
     const d1 = day("2026-07-06");
-    assert.deepEqual([d1.j10_down, d1.j10_n], [1, 2]);   // ≤10: A(r1),B(r8); 👎 among them: B
-    assert.equal(d1.j10, 1 / 2);
-    assert.deepEqual([d1.j20_down, d1.j20_n], [2, 3]);   // ≤20: A,B,C(r15); 👎: B,C  (D r25 excluded)
+    assert.deepEqual([d1.j10_down, d1.j10_n, d1.j10_v], [1, 2, 2]); // ≤10: A(r1),B(r8), both judged; 👎: B
+    assert.equal(d1.j10, 1 / 2);        // per-serve yield
+    assert.equal(d1.j10j, 1 / 2);       // per-judged (headline) — same here, full coverage
+    assert.deepEqual([d1.j20_down, d1.j20_n, d1.j20_v], [2, 3, 3]); // ≤20: A,B,C(r15) all judged; 👎: B,C (D r25 out)
     assert.equal(d1.j20, 2 / 3);
+    assert.equal(d1.j20j, 2 / 3);
     const d2 = day("2026-07-07");
-    assert.deepEqual([d2.j10_down, d2.j10_n], [0, 2]);   // ≤10: E(r3),G(r2); 👎 among them: none
+    // ≤10: E(r3) judged 👍, G(r2) UNJUDGED (pre-serve vote is context-free) — judged denominator is 1, not 2.
+    assert.deepEqual([d2.j10_down, d2.j10_n, d2.j10_v], [0, 2, 1]);
     assert.equal(d2.j10, 0);
-    assert.deepEqual([d2.j20_down, d2.j20_n], [1, 3]);   // ≤20: E,F(r12),G; 👎: F
-    assert.equal(d2.j20, 1 / 3);
+    assert.equal(d2.j10j, 0);           // 0 👎 of 1 judged — a real 0, backed by a judgment
+    assert.deepEqual([d2.j20_down, d2.j20_n, d2.j20_v], [1, 3, 2]); // ≤20: E,F(r12) judged, G not; 👎: F
+    assert.equal(d2.j20, 1 / 3);        // per-serve dilutes with the unjudged G…
+    assert.equal(d2.j20j, 1 / 2);       // …per-judged doesn't
+  });
+
+  it("a served-but-unvoted cut reads 'no data' (j*j null), never a fake 0% junk rate", () => {
+    // One card in the top 10, zero votes that day — the old per-serve rate said 0% junk (quality
+    // "improving" because voting stopped). The judged rate must be null (dash), not 0.
+    const db = new DatabaseSync(":memory:");
+    db.exec(`CREATE TABLE digest_log (digest_date TEXT, channel TEXT, tweet_id TEXT, rank INTEGER, lane TEXT, score REAL, parts TEXT, ts TEXT);`);
+    db.prepare("INSERT INTO digest_log VALUES ('2026-07-08','web','Y',5,'taste',1.0,'{}','2026-07-08T08:00:00Z')").run();
+    const s = present(scorecard(db));
+    assert.equal(s.days[0].j10, 0, "per-serve yield is 0 (kept for the raw columns)");
+    assert.equal(s.days[0].j10j, null, "per-judged junk is null — no votes is no data, not 0%");
+    assert.deepEqual([s.days[0].j10_n, s.days[0].j10_v], [1, 0]);
   });
 
   it("explore (✧) vs non-explore split, by first-serve lane", () => {
@@ -106,10 +123,12 @@ describe("digest scorecard", () => {
     assert.equal(r.totals.up, 2);
     assert.equal(r.totals.down, 4);
     assert.equal(r.totals.opens, 2);
-    assert.deepEqual([r.totals.j10_down, r.totals.j10_n], [1, 4]);
+    assert.deepEqual([r.totals.j10_down, r.totals.j10_n, r.totals.j10_v], [1, 4, 3]);
     assert.equal(r.totals.j10, 1 / 4);
-    assert.deepEqual([r.totals.j20_down, r.totals.j20_n], [3, 6]);
+    assert.equal(r.totals.j10j, 1 / 3);
+    assert.deepEqual([r.totals.j20_down, r.totals.j20_n, r.totals.j20_v], [3, 6, 5]);
     assert.equal(r.totals.j20, 3 / 6);
+    assert.equal(r.totals.j20j, 3 / 5);
     assert.deepEqual([r.totals.exp_up, r.totals.exp_down], [1, 1]);
     assert.deepEqual([r.totals.core_up, r.totals.core_down], [1, 3]);
     // Sanity: lane split partitions the votes exactly.
@@ -125,6 +144,8 @@ describe("digest scorecard", () => {
     const s = present(scorecard(db));
     assert.equal(s.days[0].j10, null);
     assert.equal(s.days[0].j20, null);
+    assert.equal(s.days[0].j10j, null);
+    assert.equal(s.days[0].j20j, null);
     assert.equal(s.days[0].served, 1);
   });
 

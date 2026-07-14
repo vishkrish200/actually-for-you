@@ -5,7 +5,48 @@ Point new sessions at this file + the PRD for full context.
 
 ---
 
-## ▶ RESUME HERE (2026-07-08)
+## ▶ RESUME HERE (2026-07-14)
+
+**M14 prospective freeze SHIPPED: the eval stack stopped grading its own homework.** Triggered
+by an external methodology review (all six of its checkable findings verified against the code).
+Ingest tests 98 → **113** green (extension untouched at 38). The 07-08 block below is
+superseded — its "SHIP ✅" was a dev-pool read and is now advisory-only by construction.
+
+- **The core problem:** reviews never *trained* anything, but the metric (MAP→AUC), the credit
+  formula (opens+👍 → opens+👍−👎), and the baseline policy (keyword → strongest) were all chosen
+  while looking at the accumulated votes. That makes the whole review pool a DEVELOPMENT set —
+  no bootstrap CI on it accounts for those choices. Honest current reads, dev pool n=825
+  (290👍/535👎): strongest baseline is **char_len 0.6930**; mix 0.7090 (diff CI [-0.019, +0.047])
+  and rubric 0.7095 ([-0.026, +0.057]) are both statistically **TIED** with it. Interleave pilot
+  final read: **TIED** at n=83 (keyword − mix CI [-0.096, 0.156]).
+- **Prospective gate (eval.ts, `GATE_CUTOFF = 2026-07-15`):** votes before the cutoff print as
+  REVIEW-DEV (advisory, never a verdict); only post-cutoff votes feed the SHIP/HOLD verdict.
+  Cutoff moves only forward, re-frozen only on deliberate gate-design changes. Rows without a
+  review_ts (fixtures) count post-cutoff; labels.ts now threads `review_ts` through LabeledRow.
+- **Confirmatory interleave window (interleave.ts, `WINDOW_START = 2026-07-15`,
+  `HORIZON_DAYS = 14`):** pre-window serves are the pilot and are excluded. The CI prints ONCE,
+  at the horizon — the old "keep serving until the CI excludes 0" language was optional stopping
+  and is gone. Floor not met at horizon → extend on n, never on the lean. TIED at the horizon is
+  the window's ANSWER (freeze a new matchup to try again), not a prompt to keep running.
+- **Interleave attribution fix:** votes now key to a tweet's arm-attributed FIRST serve — the
+  same row opens key to. The old latest-serve-before-vote join could credit an open to arm A and
+  the vote to arm B after a cross-arm re-serve (latent, hadn't corrupted the pilot votes; test
+  added). Same-votes-qualify proof: "first serve ≤ vote" ⟺ "some serve ≤ vote" (scorecard's
+  doctrine).
+- **Scorecard honesty fix:** junk@K is now 👎/**judged** at the cut (a no-vote day reads
+  "no votes", never a fake 0%), with a `judged` coverage column (98/648 lifetime — read every
+  rate with it). Honest lifetime junk@10: 51.5% (17/33 judged) — the old per-serve number
+  understated it by ~3×.
+- **Renamed, not just relabeled:** the ✧ audit pool is a ranker-BLIND-SPOT read (sampled from
+  what the rankers rejected — no arm scored those cards into the slate), NOT "serve-bias-free":
+  eligibility is conditioned on non-selection. Still the read the ranker can't flatter; still
+  thin (2👍/5👎).
+- **User's parallel jobs:** vote daily (✧ cards especially); DON'T peek at the interleave lean
+  before the day-14 read; the gate verdict returns when ~40 post-cutoff votes accumulate.
+
+---
+
+## 2026-07-08 state (M13 rebuild) — superseded by the 2026-07-14 prospective freeze
 
 **M13 evals rebuild SHIPPED (user-approved): AUC pair gate + net-credit interleave + scorecard /
 judge table / recall probe.** Ingest tests 79 → **98** green (extension untouched at 38). Built by

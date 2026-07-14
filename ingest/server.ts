@@ -104,6 +104,7 @@ try { db.exec("ALTER TABLE tweets ADD COLUMN author_name TEXT"); } catch { /* al
 try { db.exec("ALTER TABLE tweets ADD COLUMN author_avatar TEXT"); } catch { /* already present */ }
 try { db.exec("ALTER TABLE tweets ADD COLUMN source TEXT DEFAULT 'net'"); } catch { /* already present */ }
 try { db.exec("ALTER TABLE tweets ADD COLUMN quoted_id TEXT"); } catch { /* already present */ }
+try { db.exec("ALTER TABLE tweets ADD COLUMN author_profile TEXT"); } catch { /* already present */ }
 try { db.exec("ALTER TABLE impressions ADD COLUMN reported INTEGER"); } catch { /* already present */ }
 try { db.exec("ALTER TABLE impressions ADD COLUMN negative_feedback INTEGER"); } catch { /* already present */ }
 // M11: nullable arm on digest_log for DBs created before the interleave column existed. Existing
@@ -113,9 +114,9 @@ try { db.exec("ALTER TABLE digest_log ADD COLUMN arm TEXT"); } catch { /* alread
 const stmts = {
   tweet: db.prepare(`
     INSERT OR IGNORE INTO tweets
-      (tweet_id, author_handle, author_name, author_avatar, author_id, text, media, quoted_id, is_thread, created_at,
+      (tweet_id, author_handle, author_name, author_avatar, author_id, author_profile, text, media, quoted_id, is_thread, created_at,
        likes, rts, replies, views, captured_at, source)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `),
   // Precedence-upgrade write (M7). INSERT OR REPLACE swaps the whole row on a tweet_id conflict
   // (it is NOT an in-place edit statement), so the caller MUST pass every column — a partial
@@ -127,9 +128,9 @@ const stmts = {
   // only grep still holds — REPLACE is neither of the two forbidden mutation keywords.
   tweetUpgrade: db.prepare(`
     INSERT OR REPLACE INTO tweets
-      (tweet_id, author_handle, author_name, author_avatar, author_id, text, media, quoted_id, is_thread, created_at,
+      (tweet_id, author_handle, author_name, author_avatar, author_id, author_profile, text, media, quoted_id, is_thread, created_at,
        likes, rts, replies, views, captured_at, source)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `),
   impression: db.prepare(`
     INSERT OR IGNORE INTO impressions
@@ -153,7 +154,7 @@ const stmts = {
     `INSERT OR IGNORE INTO label_prunes (tweet_id, reason, ts) VALUES (?,?,?)`
   ),
   // Read the stored source (if any) to decide whether an incoming tweet outranks it (see below).
-  tweetSource: db.prepare(`SELECT source FROM tweets WHERE tweet_id = ?`),
+  tweetSource: db.prepare(`SELECT source, length(text) AS len, author_profile FROM tweets WHERE tweet_id = ?`),
   digestLog: db.prepare(
     `INSERT INTO digest_log (digest_date, channel, tweet_id, rank, lane, score, parts, ts, arm) VALUES (?,?,?,?,?,?,?,?,?)`
   ),
@@ -218,14 +219,22 @@ function ingestBatch(body: {
     );
     for (const t of tweets) {
       const incomingRank = sourceRank(t.source);
-      const storedSource = (stmts.tweetSource.get(t.tweet_id) as { source?: string } | undefined)?.source;
+      const stored = stmts.tweetSource.get(t.tweet_id) as { source?: string; len?: number; author_profile?: string | null } | undefined;
       // Absent row → plain insert (IGNORE is a no-op only if a concurrent write beat us). Present but
       // weaker → upgrade via REPLACE. Present and same-or-stronger → IGNORE leaves it untouched.
-      const stmt = storedSource !== undefined && incomingRank > sourceRank(storedSource)
-        ? stmts.tweetUpgrade
-        : stmts.tweet;
+      // Equal source + strictly longer text also upgrades: a note_tweet-aware capture superseding a
+      // pre-fix truncated row is a fidelity gain at the same tier (heals rows captured before the
+      // long-form fix); shorter/equal text at the same tier never replaces, so no downgrade path.
+      const upgrade = stored !== undefined &&
+        (incomingRank > sourceRank(stored.source) ||
+          (incomingRank === sourceRank(stored.source) && (t.text?.length ?? 0) > (stored.len ?? 0)));
+      const stmt = upgrade ? stmts.tweetUpgrade : stmts.tweet;
       stmt.run(
-        t.tweet_id, t.author_handle, t.author_name ?? "", t.author_avatar ?? "", t.author_id, t.text,
+        t.tweet_id, t.author_handle, t.author_name ?? "", t.author_avatar ?? "", t.author_id,
+        // On upgrade, an incoming capture without a profile (older extension build) keeps the
+        // stored one — REPLACE swaps the whole row, so we must carry it forward explicitly.
+        t.author_profile ? JSON.stringify(t.author_profile) : stored?.author_profile ?? null,
+        t.text,
         JSON.stringify(t.media ?? []), t.quoted_id ?? null, t.is_thread ? 1 : 0, t.created_at,
         t.metrics.likes, t.metrics.rts, t.metrics.replies, t.metrics.views ?? null,
         t.captured_at, normalizeSource(t.source),
@@ -332,6 +341,30 @@ function readBody(req: http.IncomingMessage): Promise<string> {
 }
 
 export const server = http.createServer(async (req, res) => {
+  // ---- remote read gate (Cloudflare Tunnel) ----
+  // Local traffic (extension SW, launchd scripts) hits localhost directly and never carries
+  // cf-connecting-ip; everything arriving through the tunnel does. Remote readers present
+  // AFY_TOKEN once (?key=…); a year-long HttpOnly cookie unlocks after that. Personal data —
+  // dwell, taste profile — must never be readable by whoever guesses the hostname.
+  // ponytail: one shared secret + cookie; upgrade to Cloudflare Access if it ever leaks.
+  if (req.headers["cf-connecting-ip"] && TOKEN) {
+    const gurl = new URL(req.url ?? "/", "http://localhost");
+    if (gurl.searchParams.get("key") === TOKEN) {
+      res.writeHead(302, {
+        "Set-Cookie": `afy=${TOKEN}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=31536000`,
+        "Location": gurl.pathname,
+      });
+      res.end();
+      return;
+    }
+    const cookieOk = (req.headers.cookie ?? "").split(/;\s*/).includes(`afy=${TOKEN}`);
+    if (!cookieOk && req.headers["x-afy-token"] !== TOKEN) {
+      res.writeHead(401, { "Content-Type": "text/plain" });
+      res.end("unauthorized");
+      return;
+    }
+  }
+
   if (req.method === "GET" && req.url === "/status") {
     const one = (sql: string) => (db.prepare(sql).get() as any).n;
     // Freshness: answers "is capture alive RIGHT NOW?". Scroll x.com and watch last_impression go
@@ -383,7 +416,7 @@ export const server = http.createServer(async (req, res) => {
     const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "50"), 200);
     const rows = db.prepare(`
       SELECT i.tweet_id,
-        t.author_handle, t.author_name, t.author_id, t.text, t.media, t.quoted_id,
+        t.author_handle, t.author_name, t.author_id, t.author_profile, t.text, t.media, t.quoted_id,
         t.created_at, t.likes, t.rts, t.replies, t.views,
         -- dwell_ms=30000 is exactly MAX_INTERVAL_MS: a leaked timer clamped at the cap (dropped
         -- IntersectionObserver exit under virtualized scroll), not a real read. Untrusted here.
@@ -531,8 +564,9 @@ export const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (req.method === "GET" && (req.url === "/" || req.url === "/client")) { serveHtml("client.html"); return; }
-  if (req.method === "GET" && req.url === "/prune") { serveHtml("prune.html"); return; }
+  const page = req.url?.split("?")[0]; // html routes ignore the query string (?n=200 etc.)
+  if (req.method === "GET" && (page === "/" || page === "/client")) { serveHtml("client.html"); return; }
+  if (req.method === "GET" && page === "/prune") { serveHtml("prune.html"); return; }
 
   res.writeHead(404); res.end();
 });
@@ -540,6 +574,7 @@ export const server = http.createServer(async (req, res) => {
 // Types (mirrored from extension/src/types.ts — PRD §6 is source of truth)
 interface TweetRecord {
   tweet_id: string; author_handle: string; author_name: string; author_id: string; text: string;
+  author_profile?: object; // stored opaquely as JSON (badges + hover card); UI-only
   media: { type: string; url: string }[]; is_thread: boolean; created_at: string;
   metrics: { likes: number; rts: number; replies: number; views?: number };
   captured_at: string;

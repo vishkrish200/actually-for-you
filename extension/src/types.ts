@@ -4,6 +4,17 @@ export interface TweetRecord {
   author_name: string;
   author_avatar?: string;   // X's pbs.twimg.com profile-image URL (no rate limit)
   author_id: string;
+  // Verification / affiliation / bio / follower counts — feeds the digest's badges and hover
+  // card so the user can judge WHO posted without opening X. Stored opaquely as JSON (like
+  // media); UI-only, never a ranking feature.
+  author_profile?: {
+    verified: boolean;          // blue check (or implied by a paid verified_type)
+    verified_type?: string;     // "Business" (gold) | "Government" (gray); absent = blue
+    affiliate?: { badge: string; title: string }; // small org badge next to the name
+    bio?: string;
+    followers?: number;
+    following?: number;
+  };
   text: string;
   media: { type: "photo" | "video" | "gif"; url: string }[];
   // rest_id of the tweet this one quotes, if any. The quoted tweet itself is already captured as

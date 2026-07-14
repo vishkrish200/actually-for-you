@@ -228,9 +228,10 @@ describe("eval rubric arm", () => {
     // perfect separation → rubric AUC is a perfect 1.0 and at least matches the keyword baseline.
     assert.equal(arm!.auc, 1, `rubric AUC should be perfect on cleanly-separated scores, got ${arm!.auc}`);
     assert.ok(arm!.auc >= kw.auc, "rubric at least ties keyword on this fixture");
-    // M12 rethink: every non-keyword review-pool arm carries a paired (arm − keyword) diff CI.
-    assert.ok(arm!.diffVsKw, "rubric arm has a diff CI vs keyword");
-    assert.ok(!kw.diffVsKw, "keyword carries no diff against itself");
+    // every review-pool arm except the gate reference carries a paired (arm − baseline) diff CI.
+    assert.ok(arm!.diffVsBase, "rubric arm has a diff CI vs the baseline");
+    const base = res.reviewOnly.rows.find(r => r.name === res.reviewOnly.baseline)!;
+    assert.ok(!base.diffVsBase, "the reference carries no diff against itself");
 
     // coverage: the full review pool is fully scored here → scored === total, sha matches.
     assert.ok(res.rubricCoverage, "coverage computed");
@@ -306,6 +307,7 @@ describe("eval rubric arm", () => {
     assert.ok(names.some(n => n.startsWith("rubric")), "rubric present");
     assert.ok(names.includes("taste (digest cosine)"), "taste arm present");
     assert.ok(names.includes("mix (M9 digest blend)"), "mix arm present");
+    assert.ok(names.includes("author prior (behavior only)"), "behavior-only baseline present");
     // this fixture has NO likes → taste cosine and author prior are all-zero → the mix reduces to
     // 0.3·z(rubric), and the fully-scored, cleanly-separated pool must rank perfectly. This also
     // pins missing-score handling implicitly: any −1 sentinel leaking into the mix would be a bug

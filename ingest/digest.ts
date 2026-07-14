@@ -22,6 +22,7 @@ export interface DigestItem {
   tweet_id: string;
   author_handle: string | null;
   author_name: string | null;
+  author_profile?: string | null; // raw JSON string from the tweets row; client parses (UI-only, never a feature)
   text: string;
   media: { type: string; url: string }[];
   // quoted context, resolved from quoted_id: the full quoted tweet when we captured it, the bare
@@ -345,12 +346,28 @@ function diversify(items: DigestItem[], lambda = 0.75, limit = 50): DigestItem[]
 // digest and its run ledger describe the exact same instant.
 function candidateRows(db: DatabaseSync, days: number, nowMs: number, prior: Map<string, number>): any[] {
   const rows = db.prepare(`
-    SELECT tweet_id, author_id, author_handle, author_name, text, media, quoted_id, created_at, likes, rts, replies, views FROM tweets
+    SELECT tweet_id, author_id, author_handle, author_name, author_profile, text, media, quoted_id, created_at, likes, rts, replies, views, source FROM tweets
     WHERE text IS NOT NULL AND text != ''
       AND (source = 'poll' OR tweet_id IN (SELECT tweet_id FROM impressions))
       AND tweet_id NOT IN (SELECT tweet_id FROM engagement_labels)
       AND tweet_id NOT IN (SELECT tweet_id FROM reviews)
   `).all() as any[];
+
+  // X mints SEVERAL tweet_ids for one posting event (ad-creative copies; occasional organic
+  // double-mints ~200ms apart — verified in the wild 2026-07-14), so id-level dedup downstream
+  // (teamDraft's taken set, explore's inFeed) can't stop the same card being served twice. Two
+  // content-twin rules, keyed on (author_id, text):
+  //  1. an engaged/reviewed tweet's twin is as read as the tweet itself — without this, thumbing
+  //     one copy down leaves its twin ranking identically tomorrow (the exact reappear bug the
+  //     reviews exclusion above exists to prevent);
+  //  2. surviving twins collapse to ONE candidate: organic copy over 'poll' (the user's dwell/
+  //     impressions key to the id they actually saw), lowest tweet_id (earliest mint) on ties.
+  const twinKey = (r: { author_id?: string | null; text: string }) => `${r.author_id ?? ""}\n${r.text}`;
+  const engagedTwins = new Set((db.prepare(`
+    SELECT DISTINCT COALESCE(author_id, '') || char(10) || text k FROM tweets
+    WHERE text IS NOT NULL AND text != '' AND tweet_id IN (
+      SELECT tweet_id FROM engagement_labels UNION SELECT tweet_id FROM reviews)
+  `).all() as { k: string }[]).map(r => r.k));
 
   // days filters on AUTHORED age (created_at), not capture age — X resurfaces years-old tweets
   // into the feed, so "captured yesterday" says nothing about freshness. created_at is stored in
@@ -360,11 +377,24 @@ function candidateRows(db: DatabaseSync, days: number, nowMs: number, prior: Map
 
   // fragment filter applies to every lane — link-only / one-word replies aren't worth a slot,
   // EXCEPT quote tweets: "this." over a quoted tweet is real curation, the substance is the quote.
-  return rows
+  const filtered = rows
     .filter(r => days <= 0 || new Date(r.created_at ?? 0).getTime() > cutoff)
     .filter(r => isDigestContentCandidate(r.text, r.quoted_id))
     // format policy: replies only from high-like-prior authors (prior values are log1p(count))
-    .filter(r => !isReply(r.text) || (prior.get(r.author_id ?? "") ?? 0) >= Math.log1p(REPLY_MIN_AUTHOR_LIKES));
+    .filter(r => !isReply(r.text) || (prior.get(r.author_id ?? "") ?? 0) >= Math.log1p(REPLY_MIN_AUTHOR_LIKES))
+    .filter(r => !engagedTwins.has(twinKey(r)));
+
+  const best = new Map<string, any>();
+  for (const r of filtered) {
+    const k = twinKey(r);
+    const cur = best.get(k);
+    if (!cur) { best.set(k, r); continue; }
+    const better = (cur.source === "poll") !== (r.source === "poll")
+      ? cur.source === "poll" // exactly one copy is polled → keep the organic one
+      : r.tweet_id < cur.tweet_id;
+    if (better) best.set(k, r);
+  }
+  return [...best.values()];
 }
 
 // Count the pool before any scorer, MMR, explore sampling, or team draft. This is the compact
@@ -435,10 +465,11 @@ export function buildDigest(
     .map(r => ({ ...r, lane: "explore" as const, arm: null as Arm | null })); // explore is arm-agnostic — invariant
   const step = Math.max(1, Math.floor(picked.length / (explore.length + 1)));
   explore.forEach((e, i) => picked.splice(Math.min((i + 1) * step + i, picked.length), 0, e));
-  // Resolve quote context only for the final slate (~limit rows), then drop the raw quoted_id and
-  // the author_id the mix needed internally — neither belongs in the payload.
-  return attachQuoted(db, picked as (DigestItem & { quoted_id?: string | null; author_id?: string | null })[])
-    .map(({ quoted_id: _qid, author_id: _aid, ...item }) => item as DigestItem);
+  // Resolve quote context only for the final slate (~limit rows), then drop the raw quoted_id,
+  // the author_id the mix needed internally, and the source the twin-dedup needed — none belong
+  // in the payload.
+  return attachQuoted(db, picked as (DigestItem & { quoted_id?: string | null; author_id?: string | null; source?: string })[])
+    .map(({ quoted_id: _qid, author_id: _aid, source: _src, ...item }) => item as DigestItem);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
