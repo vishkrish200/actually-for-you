@@ -26,12 +26,17 @@ permanent `explore` lane so it never collapses into a filter bubble.
 - GraphQL matched by **operation name** (IDs rotate) · selectors on **`data-testid`** (classes
   churn) · dwell keyed by **`tweet_id`** (X recycles DOM nodes).
 - Engagements read from **button-state flips**, not clicks — keyboard shortcuts count.
+- Long-form tweets read from **`note_tweet`**, not the truncated preview; author verification,
+  bio, and follower counts captured for the reader's hover card — **UI-only, never a ranking
+  feature**.
 - Durable state in **IndexedDB** (MV3 workers die constantly).
 - A 30-min **poller tab** feeds candidates through the same path — never behavioral labels.
 
 **Pipeline** (`ingest/`) — Node + built-in `node:sqlite`, zero deps, token-authed writes.
 Events are append-only; labels re-derive from raw. Every serve logs its rank, lane, and
-drafting arm; votes and opens flow back. Today's reading is tomorrow's eval data.
+drafting arm; votes and opens flow back. Today's reading is tomorrow's eval data. X mints
+several tweet_ids for one posting event, so candidates dedup on **(author, text)** content
+twins — thumbing one copy down retires its clones too.
 
 ## Ranking signals
 
@@ -152,8 +157,8 @@ from my own timeline) · **bigger models** (each lost on a fair gate; the bottle
 | Ingest | Node + `node:sqlite` | **zero runtime deps** |
 | Ranking | Pure TypeScript | no ML framework |
 | LLM judge | local `claude` CLI | no API key; degrades to neutral |
-| Evals | AUC gate + interleave | offline guardrail, online verdict; seeded, reproducible |
-| Tests | vitest + `node:test` | 38 + 113 green |
+| Evals | prospective AUC gate + fixed-horizon A/B | offline guardrail, online verdict; seeded, reproducible |
+| Tests | vitest + `node:test` | 45 + 113 green |
 | Scheduling | macOS launchd | survives reboot |
 
 ## Running it
@@ -169,10 +174,10 @@ the `claude` binary (optional — everything degrades without it).
 
 ## History
 
-Thirteen milestones: capture → ingest → read loop → labels → the learned-ranker HOLD → daily
-delivery → poller → LLM rubric → mix → serve telemetry → interleaving → the eval rebuild.
-~63k tweets, ~88k impressions, ~600 hand votes. [`PROGRESS.md`](./PROGRESS.md) ·
-[`PRD.md`](./PRD.md) · [the blog post](./docs/blog-post.md).
+Fourteen milestones: capture → ingest → read loop → labels → the learned-ranker HOLD → daily
+delivery → poller → LLM rubric → mix → serve telemetry → interleaving → the eval rebuild →
+the prospective freeze. ~68k tweets, ~95k impressions, ~830 hand votes.
+[`PROGRESS.md`](./PROGRESS.md) · [`PRD.md`](./PRD.md) · [the blog post](./docs/blog-post.md).
 
 ## Inspirations
 
