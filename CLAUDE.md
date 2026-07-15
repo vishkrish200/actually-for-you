@@ -13,8 +13,12 @@ milestone claims here.** Work proceeds one phase at a time; the user approves be
 
 - Raw events are **append-only**. Labels re-derive from raw; never mutate events.
 - Never train the ranker on the ranker's own output. Labels come from observed behavior only.
-- Hand-signed 👍/👎 reviews are the ONLY non-circular gold labels. The `AI_LEXICON` keyword list
-  is a **baseline to beat**, never a label source — anything it touches is circular for eval.
+- Hand-signed 👍/👎 reviews at-or-after `GATE_CUTOFF` are the ONLY non-circular gold labels —
+  untouchable, nothing trains on them. Pre-cutoff reviews are **spent dev currency** (amendment
+  2026-07-15): usable as training labels for dev-trained arms (`review-lr`), never for verdicts —
+  any dev-pool read of such an arm is a train-set read. If `GATE_CUTOFF` moves forward, the train
+  set is re-cut with it. The `AI_LEXICON` keyword list is a **baseline to beat**, never a label
+  source — anything it touches is circular for eval.
 - `char_len` / `media_present` / `is_thread` are **confounder controls**: regressed in during
   training, dropped at predict. Never reward features.
 - The `explore` lane must exist in every ranker version (anti-filter-bubble + low-bias data).
@@ -24,7 +28,9 @@ milestone claims here.** Work proceeds one phase at a time; the user approves be
 - LLM rubric scores (M8) are ranking **features**, never label sources — the AI_LEXICON rule one
   layer up: an LLM-labeled eval pool is circular for any LLM-scored ranker.
 - Author priors (M9) derive from `engagement_labels` ONLY, never from `reviews` — reviews are
-  eval-only gold; features built from them leak the gate into the model.
+  eval-only gold; features built from them leak the gate into the model. (Features from reviews
+  still leak; distinct from `review-lr`'s *labels*, which are pre-cutoff-only per the 2026-07-15
+  amendment.)
 - `afy.db`, `model.json`, `.env.local` are personal data — gitignored, never commit them.
   `ducky-cli/` is an unrelated project accidentally nested here — never commit it.
 

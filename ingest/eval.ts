@@ -20,7 +20,9 @@
 // "tie" was the instrument, not the arms. The gate stays a guardrail; the interleave stays the
 // verdict-maker (doctrine unchanged — do NOT tune weights/hyperparameters against this).
 //
-// eval.ts no longer TRAINS anything: reviews are 100% test by doctrine (no arm trains on gold).
+// eval.ts no longer TRAINS anything itself: post-cutoff reviews are 100% test by doctrine;
+// review-lr trains on pre-cutoff (dev) votes only — the prospective split is its train/test
+// boundary, so its dev-pool row is a train-set read.
 // But "never trained on" is not "never looked at": the metric (MAP→AUC), the credit formula, and
 // the strongest-baseline policy were all chosen WHILE inspecting the accumulated votes — so that
 // pool is a DEVELOPMENT set, and no bootstrap CI on it accounts for those choices. Hence the
@@ -155,6 +157,7 @@ export interface MixInputs { taste: TasteModel; authorPrior: Map<string, number>
 // interleave is the product-truth read.
 function armsFor(
   pool: LabeledRow[], rubric?: RubricScores, mix?: MixInputs,
+  reviewLr?: { label: string; scores: Map<string, number> },
 ): [string, (r: LabeledRow) => number][] {
   const named: [string, (r: LabeledRow) => number][] = [
     ["random", randomScorer(pool)],
@@ -163,6 +166,10 @@ function armsFor(
     ["keyword (lexicon)", lexiconScore],
   ];
   if (rubric) named.push(["rubric (LLM judge)", rubricScorer(rubric)]);
+  // M14 experiment: review-lr (dev-trained) — review_lr.py's label carries the fitted C. Missing
+  // score = -1 rank-last, the rubric arm's contract (the python asserts full pool coverage, so
+  // this sentinel should never actually trigger).
+  if (reviewLr) named.push([reviewLr.label, (r) => reviewLr.scores.get(r.tweet_id) ?? -1]);
   if (mix) {
     // Behavior-only baseline: the M9 author prior run solo. Non-circular (engagement_labels only,
     // never reviews) — the bar that answers "does content modeling add anything over WHO posted?"
@@ -285,9 +292,10 @@ function bootstrapAUC(
 function evalCut(
   poolName: string, pos: LabeledRow[], neg: LabeledRow[],
   rubric?: RubricScores, mix?: MixInputs, withCI = true,
+  reviewLr?: { label: string; scores: Map<string, number> },
 ): PoolResult {
   const pool = [...pos, ...neg];
-  const named = armsFor(pool, rubric, mix);
+  const named = armsFor(pool, rubric, mix, reviewLr);
   let tiedPairs = 0;
   const rows: PoolResult["rows"] = named.map(([name, sc], i) => {
     const tied = aucOnKeywordTies(pos, neg, sc);
@@ -366,6 +374,7 @@ export interface EvalResult {
 // passes them in. `shaScores` (loadRubricScoresBySha) drives the judge-calibration table.
 export function runEval(
   rows: LabeledRow[], rubric?: RubricScores, mix?: MixInputs, shaScores: ShaScores[] = [],
+  reviewLr?: { label: string; scores: Map<string, number> },
 ): EvalResult {
   const reviewPos = rows.filter(r => r.kind === "review_pos");
   const reviewNeg = rows.filter(r => r.kind === "review_neg");
@@ -374,7 +383,7 @@ export function runEval(
   // the gate's own design was chosen looking at these votes, so they regression-test, never verdict.
   const reviewOnly = evalCut(
     "REVIEW-DEV (all hand-signed 👍 vs 👎; pre-cutoff included) — ADVISORY, NEVER A VERDICT",
-    reviewPos, reviewNeg, rubric, mix);
+    reviewPos, reviewNeg, rubric, mix, true, reviewLr);
 
   // THE gate: votes cast at-or-after GATE_CUTOFF only — no design decision has seen them.
   // Rows without a review_ts (fixtures) count as post-cutoff.
@@ -382,7 +391,7 @@ export function runEval(
   const gatePos = reviewPos.filter(r => !isDev(r)), gateNeg = reviewNeg.filter(r => !isDev(r));
   const reviewGate = evalCut(
     `REVIEW-PROSPECTIVE (votes since ${GATE_CUTOFF}) — NON-CIRCULAR SHIP GATE`,
-    gatePos, gateNeg, rubric, mix);
+    gatePos, gateNeg, rubric, mix, true, reviewLr);
 
   // M12 audit: votes attributed to ✧ explore-lane serves ONLY — cards no ranker scored into the
   // slate (sampled from the rankers' rejects; ranker-conditioned, not an unbiased sample).
@@ -390,7 +399,8 @@ export function runEval(
   const auditPos = reviewPos.filter(r => r.served_lane === "explore");
   const auditNeg = reviewNeg.filter(r => r.served_lane === "explore");
   const reviewAudit = evalCut(
-    "REVIEW-EXPLORE (✧-lane votes only) — RANKER-BLIND-SPOT AUDIT", auditPos, auditNeg, rubric, mix);
+    "REVIEW-EXPLORE (✧-lane votes only) — RANKER-BLIND-SPOT AUDIT", auditPos, auditNeg, rubric, mix,
+    true, reviewLr);
 
   // Length-band cut: ALL votes (pre- and post-cutoff) whose tweet sits in the band where char_len is
   // blind. Pooled deliberately — this is already advisory-only, and the whole point is to see where
@@ -398,7 +408,7 @@ export function runEval(
   const inBand = (r: LabeledRow) => r.char_len >= BAND_LO && r.char_len <= BAND_HI;
   const reviewBand = evalCut(
     `REVIEW-LENGTH-BAND (${BAND_LO}–${BAND_HI} chars — where char_len is blind) — ADVISORY, NEVER A VERDICT`,
-    reviewPos.filter(inBand), reviewNeg.filter(inBand), rubric, mix);
+    reviewPos.filter(inBand), reviewNeg.filter(inBand), rubric, mix, true, reviewLr);
 
   // M8 coverage on the FULL review pool at the latest sha — the number that qualifies the rubric
   // verdict (measured against the same rows the arm ranks, so it can't over-claim).
@@ -561,9 +571,20 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   // eval stays strictly read-only: loadRubricScores / loadRubricScoresBySha tolerate a missing
   // rubric_scores table (return empty) and NEVER create it — the scorer/server own the CREATE.
   // MixInputs mirror exactly what buildDigest ships: same taste profile, same author prior.
+  // review_lr_scores (review_lr.py) is optional the same way: absent table → arm not shown.
+  let reviewLr: { label: string; scores: Map<string, number> } | undefined;
+  try {
+    const rows = db.prepare(`SELECT tweet_id, model, score FROM review_lr_scores`).all() as
+      { tweet_id: string; model: string; score: number }[];
+    if (rows.length) reviewLr = {
+      label: "review-lr (dev-trained)",
+      scores: new Map(rows.map(r => [r.tweet_id, r.score])),
+    };
+  } catch { /* table not created yet — run review_lr_dump.ts + review_lr.py */ }
   console.log(formatEval(runEval(
     buildLabels(db), loadRubricScores(db),
     { taste: buildTaste(db), authorPrior: buildAuthorPrior(db) },
     loadRubricScoresBySha(db),
+    reviewLr,
   )));
 }

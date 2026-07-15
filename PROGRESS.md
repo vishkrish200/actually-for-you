@@ -100,6 +100,28 @@ fresh post-cutoff votes.
    - **Comfort:** the interleave compares arms under the SAME UI, so presentation bias mostly
      cancels arm-vs-arm; the contamination story mainly touches the gate's length contest.
 
+3. **"Spent dev currency" amendment — pre-cutoff reviews become training labels for a dev-trained
+   arm (recorded 2026-07-15, BEFORE the review-lr eval run per this block's own rule).**
+   CLAUDE.md's gold-label invariant is amended: hand-signed 👍/👎 votes at-or-after `GATE_CUTOFF`
+   remain the ONLY non-circular gold, untouchable, nothing trains on them. Pre-cutoff votes —
+   previously read-only dev/advisory rows — are now also usable as TRAINING labels for arms
+   explicitly named as dev-trained (first instance: `review-lr`, a logistic regression over
+   [MiniLM embedding + rubric + taste cosine + author prior], char_len/media/thread as train-only
+   confounder controls, `review_lr.py`). The arm is scored over the whole review pool and gated
+   the normal prospective way: its dev-pool (`REVIEW-DEV`) row is a train-set read (the arm has
+   literally seen those labels) and can never verdict; only its post-cutoff `REVIEW-PROSPECTIVE`
+   row is non-circular, because `review_lr.py` asserts (hard fail, not a soft check) that its
+   train set is a strict subset of pre-cutoff rows only.
+   - **`GATE_CUTOFF` does NOT move.** The gate design itself — the AUC metric, the credit formula,
+     the strongest-baseline policy — is unchanged and untouched by this amendment. This only adds
+     one new arm whose training labels are strictly pre-cutoff; the prospective gate's non-circularity
+     argument for every existing arm (none of which train on anything) is undisturbed.
+   - **Why this doesn't reopen the freeze:** the freeze's purpose was "no design decision may see
+     the votes it is later judged against." `review-lr`'s design (feature set, C grid, standardization)
+     was fixed before dev labels were fit; only the LR *weights* see pre-cutoff votes, and the
+     prospective split still keeps post-cutoff votes untouched by that fit. Same boundary, one more
+     kind of thing sitting on the dev side of it.
+
 ---
 
 ## 2026-07-08 state (M13 rebuild) — superseded by the 2026-07-14 prospective freeze
