@@ -18,8 +18,9 @@
 //
 // Honesty rails, on purpose: (1) it refuses a verdict below a judged-event floor (opens+votes are
 // the only judgments; below the floor the point estimate is noise) — prints the count and the floor,
-// loudly. (2) The lean is a paired seeded-bootstrap CI over DAYS (the independent trials); a CI that
-// straddles 0 prints TIED, same doctrine as eval.ts's diff CI. (3) Coverage counts always print, so
+// loudly. (2) The lean is a seeded-bootstrap CI, stratified over arm-attributed first-served TWEETS
+// (the resample unit since the 2026-07-15 horizon amendment — days degenerate at a 2-day read); a CI
+// that straddles 0 prints TIED, same doctrine as eval.ts's diff CI. (3) Coverage counts always print, so
 // a thin comparison reads as thin by construction. (4) CONFIRMATORY WINDOW (frozen 2026-07-14;
 // re-frozen 2026-07-15 for the mix-vs-review_lr matchup — see the WINDOW_START block below):
 // serves before WINDOW_START can't verdict — the pilot's credit formula changed mid-flight, and the
@@ -48,8 +49,17 @@ export const JUDGED_FLOOR = 30;
 // chosen watching it; 2026-07-15 itself: the superseded mix-vs-keyword day). The CI reads once,
 // when HORIZON_DAYS distinct digest days have served in-window. Changing the matchup, the credit
 // formula, or the floor restarts the window at a new start date.
+//
+// AMENDED same day, 2026-07-15, still BEFORE any in-window serve (verified: digest_log has ZERO
+// rows with digest_date >= 2026-07-16): horizon shortened 14 → 2 days (user decision — a 14-day
+// wait is too slow for this loop), and the CI's resample unit switched from days to
+// arm-attributed first-served TWEETS (a 2-day horizon leaves 1–2 day-units, which estimate no
+// variance; see bootstrapDiff). Matchup, credit formula, floor, and WINDOW_START all unchanged.
+// HONEST POWER NOTE: at a 2-day n (likely ~100–200 judged events) the CI only separates LARGE
+// effects — a TIED read at day 2 means "no large effect detected", not "no effect"; any follow-up
+// window must be predeclared fresh, never an extension of a lean.
 export const WINDOW_START = "2026-07-16";
-export const HORIZON_DAYS = 14;
+export const HORIZON_DAYS = 2;
 
 // Arm-attributed FIRST serve per tweet within the window: the earliest in-window serve that a team
 // drafted (arm IS NOT NULL). funnel.ts's FIRST_SERVE doctrine — exposure = first sight, re-serves
@@ -67,7 +77,7 @@ const ARM_FIRST_SERVE = `
 // before (scorecard.ts's doctrine). Votes with no prior arm-attributed serve (review mode,
 // pre-M11/pilot serves) don't join — honestly excluded, same as the funnel.
 const VOTE_ARM_SERVE = `
-  SELECT v.verdict, fs.arm, fs.digest_date
+  SELECT v.verdict, fs.arm, fs.digest_date, fs.tweet_id
   FROM (SELECT tweet_id, verdict, MAX(ts) AS ts FROM reviews GROUP BY tweet_id) v
   JOIN (${ARM_FIRST_SERVE}) fs ON fs.tweet_id = v.tweet_id AND fs.ts <= v.ts`;
 
@@ -81,10 +91,14 @@ export interface ArmRow {
   credit_rate: number; // credits / served (0 when the arm served nothing; negative when 👎 outweigh opens+👍)
 }
 
-// Per-arm × per-day credits/serves — the paired unit the bootstrap resamples. One row per
-// (arm, digest_date) the arm was exposed on; credits = that day's opens + 👍 − 👎 on the arm's
-// serves (may be negative — a day the arm drew only downvotes).
+// Per-arm × per-day credits/serves — DISPLAY ONLY since the 2026-07-15 amendment (day-level wins
+// table); the bootstrap resamples tweets now. One row per (arm, digest_date) the arm was exposed
+// on; credits = that day's opens + 👍 − 👎 on the arm's serves (may be negative).
 interface ArmDay { arm: string; digest_date: string; served: number; credits: number }
+
+// Per-TWEET net credit — the bootstrap's resample unit. Each arm-attributed first-served tweet
+// belongs to exactly ONE arm (first-serve attribution), carrying opens(0/1) + 👍(0/1) − 👎(0/1).
+export interface ArmTweet { arm: string; credits: number }
 
 export interface InterleaveReport {
   arms: ArmRow[];                 // per-arm totals (the headline table)
@@ -92,36 +106,31 @@ export interface InterleaveReport {
   tiedDays: number;              // days both arms tied on credits (incl. 0–0) — neither wins
   judged: number;                // total judged events (opens + attributed votes) — the floor gate
   matchup: [string, string] | null; // the two arms actually present in the data, or null if <2
-  diffCI?: [lo: number, median: number, hi: number]; // paired-bootstrap CI on credit-rate diff (A−B)
+  diffCI?: [lo: number, median: number, hi: number]; // stratified tweet-bootstrap CI on credit-rate diff (A−B)
   verdict: string;               // human-readable lean / TIED / insufficient-data line
 }
 
-// Paired bootstrap over DAYS (eval.ts's seeded-PRNG shape — NO Math.random). Resample the set of
-// (arm,day) rows by DAY with replacement B times; for each resample pool credits/serves per arm and
-// take the credit-rate diff (armA − armB). The two arms share the SAME resampled days each iteration
-// (paired), so day-to-day variance cancels in the diff. Returns the sorted diff distribution.
-function bootstrapDiff(days: ArmDay[], armA: string, armB: string, B = 2000): number[] {
-  const dayIds = [...new Set(days.map(d => d.digest_date))];
-  // index (arm,day) → {served, credits} for O(1) pooling; a day may have a row for one arm only.
-  const byDay = new Map<string, { a?: ArmDay; b?: ArmDay }>();
-  for (const id of dayIds) byDay.set(id, {});
-  for (const d of days) {
-    const slot = byDay.get(d.digest_date)!;
-    if (d.arm === armA) slot.a = d; else if (d.arm === armB) slot.b = d;
-  }
+// Stratified bootstrap over arm-attributed first-served TWEETS (eval.ts's seeded-PRNG shape — NO
+// Math.random). Unit switched from days on 2026-07-15, with the 2-day horizon: 1–2 day-units
+// estimate no variance, while tweets number dozens per day. Each tweet already belongs to exactly
+// one arm via first-serve attribution, so resample WITHIN each arm with replacement B times,
+// recompute each arm's credit rate (Σcredits / n) on the resample, and take the diff (armA − armB).
+// Same seed, same B, same 2.5/50/97.5 percentiles, same TIED-if-CI-straddles-0 rule — only the
+// resample unit changed. An arm with no tweets rates 0 (the horizon/floor gates should prevent
+// this ever reaching a verdict). Exported for the determinism/degenerate-n tests.
+export function bootstrapDiff(tweets: ArmTweet[], armA: string, armB: string, B = 2000): number[] {
+  const credA = tweets.filter(t => t.arm === armA).map(t => t.credits);
+  const credB = tweets.filter(t => t.arm === armB).map(t => t.credits);
   let s = 0x243f6a88; // eval.ts's bootstrap seed — reproducible run-to-run
   const rand = () => { s = (s + 0x6d2b79f5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  const rate = (cred: number[]) => {
+    if (cred.length === 0) return 0;
+    let sum = 0;
+    for (let k = 0; k < cred.length; k++) sum += cred[Math.floor(rand() * cred.length)];
+    return sum / cred.length;
+  };
   const out: number[] = [];
-  const n = dayIds.length;
-  for (let b = 0; b < B; b++) {
-    let cA = 0, sA = 0, cB = 0, sB = 0;
-    for (let k = 0; k < n; k++) {
-      const pick = byDay.get(dayIds[Math.floor(rand() * n)])!;
-      if (pick.a) { cA += pick.a.credits; sA += pick.a.served; }
-      if (pick.b) { cB += pick.b.credits; sB += pick.b.served; }
-    }
-    out.push((sA ? cA / sA : 0) - (sB ? cB / sB : 0));
-  }
+  for (let b = 0; b < B; b++) out.push(rate(credA) - rate(credB));
   return out.sort((x, y) => x - y);
 }
 const pctile = (xs: number[], p: number) => xs[Math.floor(p * (xs.length - 1))];
@@ -168,8 +177,9 @@ export function interleaveReport(
     return { arm: r.arm, served: r.served, opened: r.opened, up, down, credits, credit_rate: r.served ? credits / r.served : 0 };
   }).sort((a, b) => (a.arm < b.arm ? -1 : 1));
 
-  // Per-(arm,day) credits/serves for the day-level wins + the bootstrap. Opens and votes both keyed
-  // to the arm-attributed FIRST serve's digest_date (the day the exposure happened).
+  // Per-(arm,day) credits/serves for the day-level wins table (display; the bootstrap resamples
+  // tweets since the 2026-07-15 amendment). Opens and votes both keyed to the arm-attributed FIRST
+  // serve's digest_date (the day the exposure happened).
   const dayServeOpen = db.prepare(`
     WITH fs AS (${ARM_FIRST_SERVE})
     SELECT fs.arm AS arm, fs.digest_date AS digest_date, COUNT(*) AS served,
@@ -192,6 +202,24 @@ export function interleaveReport(
     const up = upByArmDay.get(`${d.arm} ${d.digest_date}`) ?? 0;
     const down = downByArmDay.get(`${d.arm} ${d.digest_date}`) ?? 0;
     return { arm: d.arm, digest_date: d.digest_date, served: d.served, credits: d.opened + up - down };
+  });
+
+  // Per-TWEET net credits — the bootstrap's resample unit (2026-07-15 amendment). Same joins as the
+  // per-arm totals, keyed per tweet: opened is 0/1 (COUNT DISTINCT collapses one tweet's opens),
+  // up/down are 0/1 (VOTE_ARM_SERVE already reduces to the latest verdict per tweet).
+  const tweetServeOpen = db.prepare(`
+    WITH fs AS (${ARM_FIRST_SERVE})
+    SELECT fs.arm AS arm, fs.tweet_id AS tweet_id, COUNT(DISTINCT o.tweet_id) AS opened
+    FROM fs LEFT JOIN digest_opens o ON o.tweet_id = fs.tweet_id AND o.ts >= fs.ts
+    GROUP BY fs.arm, fs.tweet_id`).all(windowStart) as { arm: string; tweet_id: string; opened: number }[];
+  const tweetVotes = db.prepare(`
+    WITH vs AS (${VOTE_ARM_SERVE})
+    SELECT tweet_id, SUM(verdict = 1) AS up, SUM(verdict = -1) AS down FROM vs GROUP BY tweet_id`)
+    .all(windowStart) as { tweet_id: string; up: number | null; down: number | null }[];
+  const votesByTweet = new Map(tweetVotes.map(t => [t.tweet_id, { up: Number(t.up ?? 0), down: Number(t.down ?? 0) }]));
+  const armTweets: ArmTweet[] = tweetServeOpen.map(t => {
+    const v = votesByTweet.get(t.tweet_id) ?? { up: 0, down: 0 };
+    return { arm: t.arm, credits: t.opened + v.up - v.down };
   });
 
   // Which two arms are actually in the data (interleaving is a 2-arm design). Sorted so armA/armB
@@ -228,7 +256,7 @@ export function interleaveReport(
 
   // Verdict. Horizon first (NO PEEKING — the CI prints once, at the predeclared read), then the
   // floor (loud, no lean below it; the window extends on n, never on the lean), then the
-  // paired-bootstrap CI: straddles 0 → TIED, excludes 0 → a real lean toward the arm on the
+  // tweet-bootstrap CI: straddles 0 → TIED, excludes 0 → a real lean toward the arm on the
   // positive side of the (armA − armB) diff. Either way the horizon read is the window's ANSWER —
   // never "keep serving until it excludes 0" (optional stopping manufactures leans).
   const daysServed = new Set(dayServeOpen.map(d => d.digest_date)).size;
@@ -245,7 +273,7 @@ export function interleaveReport(
     verdict = `insufficient data (${judged} judged events, floor ${JUDGED_FLOOR}) — the window stays open until the floor is met (extension is n-based, never lean-based); then the CI reads once.`;
   } else {
     const [armA, armB] = matchup;
-    const diff = bootstrapDiff(armDays, armA, armB);
+    const diff = bootstrapDiff(armTweets, armA, armB);
     diffCI = [pctile(diff, 0.025), pctile(diff, 0.5), pctile(diff, 0.975)];
     const [lo, , hi] = diffCI;
     // TIED when 0 is INSIDE the closed CI (lo≤0≤hi) — this includes the degenerate [0,0] case of

@@ -5,7 +5,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { buildDigest, teamDraft, type Arm, type DigestItem } from "./digest.ts";
-import { interleaveReport, JUDGED_FLOOR, WINDOW_START, HORIZON_DAYS } from "./interleave.ts";
+import { interleaveReport, bootstrapDiff, JUDGED_FLOOR, WINDOW_START, HORIZON_DAYS, type ArmTweet } from "./interleave.ts";
 
 // The report math is tested window-free: windowStart before every fixture date, horizon 0 so the
 // verdict logic runs immediately (the frozen WINDOW_START/HORIZON_DAYS get their own tests below).
@@ -219,7 +219,7 @@ describe("M11 interleave report (read-only math)", () => {
     assert.equal(r.tiedDays, 1);
   });
 
-  it("above the floor: paired-bootstrap CI produces a LEAN when one arm dominates every day", () => {
+  it("above the floor: the tweet-bootstrap CI produces a LEAN when one arm dominates every day", () => {
     const r = interleaveReport(reportSeedAboveFloor(), PILOT);
     assert.ok(r.judged >= JUDGED_FLOOR, `judged ${r.judged} clears the floor ${JUDGED_FLOOR}`);
     assert.ok(r.diffCI, "CI computed above the floor");
@@ -386,10 +386,10 @@ describe("M11 interleave report (read-only math)", () => {
     assert.equal(mix.credits, 2, "opens(1) + 👍(1) all on one arm — coherent numerator/denominator");
   });
 
-  it("confirmatory window: pilot serves are excluded; below the horizon the CI does not print (no peeking)", () => {
-    // One pilot day (before WINDOW_START) plus two in-window days with plenty of judged events —
-    // enough to clear the 30-event floor, but 2 < HORIZON_DAYS, so the report must show coverage
-    // and REFUSE the CI/lean until the predeclared read.
+  it("confirmatory window: pilot serves are excluded; below the horizon the CI does not print, AT it the CI reads", () => {
+    // One pilot day (before WINDOW_START) plus in-window days with plenty of judged events. At
+    // day 1 (< HORIZON_DAYS = 2) the report must show coverage and REFUSE the CI/lean; adding
+    // day 2 reaches the predeclared horizon and the CI reads — once, symmetric fixture → TIED.
     const db = new DatabaseSync(":memory:");
     db.exec(`
       CREATE TABLE digest_log (rowid INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -402,21 +402,59 @@ describe("M11 interleave report (read-only math)", () => {
     // Pilot day — before the window; must not appear anywhere in the report.
     serve.run("2026-07-10", "web", "P1", 1, "taste", "2026-07-10T08:00:00Z", "mix");
     open.run("P1", "2026-07-10T09:00:00Z");
-    // Two in-window days, 20 opened serves each → 40 judged events (over the floor), but only 2 days.
-    for (const [day, n] of [["2026-07-16", 20], ["2026-07-17", 20]] as const) {
-      for (let i = 0; i < n; i++) {
-        const arm = i % 2 === 0 ? "mix" : "keyword";
+    const serveDay = (day: string) => {
+      for (let i = 0; i < 20; i++) {
+        const arm = i % 2 === 0 ? "mix" : "review_lr";
         serve.run(day, "web", `${day}-${i}`, i + 1, "taste", `${day}T08:00:00Z`, arm);
         open.run(`${day}-${i}`, `${day}T09:00:00Z`);
       }
-    }
-    const r = interleaveReport(db); // frozen defaults: WINDOW_START / HORIZON_DAYS
-    const total = r.arms.reduce((s, a) => s + a.served, 0);
-    assert.equal(total, 40, "pilot serve P1 (pre-window) is excluded from the window read");
-    assert.ok(r.judged >= JUDGED_FLOOR, `floor met (${r.judged}) — the refusal below is horizon-driven, not floor-driven`);
-    assert.ok(!r.diffCI, "no CI before the predeclared horizon — no peeking");
-    assert.match(r.verdict, new RegExp(`confirmatory window day 2/${HORIZON_DAYS}`));
-    assert.match(r.verdict, /NO PEEKING/);
+    };
+    // Day 1: 20 opened serves → 20 judged events; 1 < HORIZON_DAYS → no CI regardless of the floor.
+    serveDay("2026-07-16");
+    const day1 = interleaveReport(db); // frozen defaults: WINDOW_START / HORIZON_DAYS
+    assert.equal(day1.arms.reduce((s, a) => s + a.served, 0), 20,
+      "pilot serve P1 (pre-window) is excluded from the window read");
+    assert.ok(!day1.diffCI, "no CI before the predeclared horizon — no peeking");
+    assert.match(day1.verdict, new RegExp(`confirmatory window day 1/${HORIZON_DAYS}`));
+    assert.match(day1.verdict, /NO PEEKING/);
+    // Day 2: the predeclared horizon. Floor met (40 judged) → the CI reads, once, and the
+    // symmetric fixture (every drafted tweet opened, both arms) is TIED — the window's answer.
+    serveDay("2026-07-17");
+    const day2 = interleaveReport(db);
+    assert.ok(day2.judged >= JUDGED_FLOOR, `floor met (${day2.judged}) at the horizon`);
+    assert.ok(day2.diffCI, "the CI reads AT the predeclared horizon");
+    const [lo, , hi] = day2.diffCI!;
+    assert.ok(lo <= 0 && hi >= 0, `symmetric credits → CI [${lo}, ${hi}] straddles 0`);
+    assert.match(day2.verdict, /TIED/);
     assert.ok(WINDOW_START > "2026-07-14", "the window starts after the freeze date");
+    assert.equal(HORIZON_DAYS, 2, "the 2026-07-15 amendment: read at 2 days, not 14");
+  });
+});
+
+// ---- 2026-07-15 amendment: the CI resamples TWEETS (stratified by arm), not days ----
+describe("tweet-level stratified bootstrap (bootstrapDiff)", () => {
+  const mk = (arm: string, credits: number[]): ArmTweet[] => credits.map(c => ({ arm, credits: c }));
+
+  it("is deterministic (seeded PRNG) and bounded by the fixture's rate range", () => {
+    const tweets = [...mk("a", [1, 1, 0, 0]), ...mk("b", [0, 0, 0, 0])];
+    const d1 = bootstrapDiff(tweets, "a", "b");
+    const d2 = bootstrapDiff(tweets, "a", "b");
+    assert.deepEqual(d1, d2, "same seed → identical diff distribution run-to-run");
+    assert.equal(d1.length, 2000, "B=2000 resamples");
+    // b's rate is 0 in every resample; a's is in [0,1] → every diff must sit in [0,1], sorted.
+    assert.ok(d1[0] >= 0 && d1[d1.length - 1] <= 1, `diffs within [0,1], got [${d1[0]}, ${d1[d1.length - 1]}]`);
+    for (let i = 1; i < d1.length; i++) assert.ok(d1[i] >= d1[i - 1], "distribution is sorted");
+  });
+
+  it("degenerate n=1 tweet per arm: no crash, every resample returns the same point diff", () => {
+    const tweets = [...mk("a", [1]), ...mk("b", [0])];
+    const d = bootstrapDiff(tweets, "a", "b");
+    assert.equal(d.length, 2000);
+    assert.ok(d.every(x => x === 1), "one tweet per arm → the resample is always that tweet → diff constant");
+  });
+
+  it("an arm with zero tweets rates 0 instead of crashing", () => {
+    const d = bootstrapDiff(mk("a", [1, 1]), "a", "b");
+    assert.ok(d.every(x => x === 1), "missing arm b → rate 0 → diff = a's rate alone");
   });
 });

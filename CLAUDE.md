@@ -52,10 +52,15 @@ post-cutoff votes feed the gate. Move the cutoff only forward, and only when re-
 a deliberate gate-design change.
 
 **Interleave confirmatory window (re-frozen 2026-07-15, `WINDOW_START = 2026-07-16`,
-`HORIZON_DAYS = 14`):** matchup is **mix vs review-lr**; credit formula and floor UNCHANGED from
+`HORIZON_DAYS = 2`):** matchup is **mix vs review-lr**; credit formula and floor UNCHANGED from
 the 2026-07-14 freeze. The prior mix-vs-keyword window (started 2026-07-15) was superseded
 before its horizon WITHOUT a CI read (matchup change, not optional stopping); everything before
-that was the pilot (credit formula changed mid-flight; final pilot read: TIED at n=83). The
+that was the pilot (credit formula changed mid-flight; final pilot read: TIED at n=83). Amended
+same day, still before any in-window serve (verified 0 in-window digest_log rows): horizon
+14 → 2 days and the CI's resample unit switched day-bootstrap → **tweet-bootstrap** (stratified
+over arm-attributed first-served tweets — 1–2 day-units estimate no variance). At a 2-day n the
+CI only separates LARGE effects: a TIED read at day 2 means "no large effect detected", not "no
+effect"; any follow-up window must be predeclared fresh, never an extension of a lean. The
 review-lr arm is a frozen **recipe**, not frozen weights: training labels frozen (pre-cutoff
 reviews only), retrained daily on refreshed features (taste/prior/rubric drift daily exactly as
 mix's inputs do); changing the recipe (labels, feature set, C grid) = matchup change = new

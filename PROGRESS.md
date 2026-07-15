@@ -30,6 +30,19 @@ read** — no peeking occurred; a matchup change is not optional stopping. Credi
   mode never blocks the 08:00 digest (rubric's graceful contract, copied).
 - Ingest tests 117 → **120** green (armRanking snapshot: external-score order + mean-fallback
   mid-pack landing + blind-serving check).
+- **Horizon amendment (same day, 2026-07-15, BEFORE any in-window serve — verified digest_log
+  has ZERO rows with `digest_date >= 2026-07-16`):** user decision — 14 days is too slow.
+  `HORIZON_DAYS` 14 → **2**, and the CI's resample unit switched day-bootstrap →
+  **tweet-bootstrap**: stratified over arm-attributed first-served tweets, resampled with
+  replacement WITHIN each arm (each tweet belongs to exactly one arm via first-serve
+  attribution); a 2-day horizon leaves 1–2 day-units, which estimate no variance. Same seed
+  (0x243f6a88), B=2000, 2.5/50/97.5 percentiles, TIED-if-CI-straddles-0 rule; the per-day wins
+  table stays as display. Matchup, credit formula, floor, `WINDOW_START` all unchanged.
+  **Honest power note:** at a 2-day n (likely ~100–200 judged events) the CI only separates
+  large effects — a TIED read at day 2 means "no large effect detected", not "no effect"; any
+  follow-up window must be predeclared fresh, never an extension of a lean. Tests 120 → **123**
+  (bootstrapDiff determinism, degenerate n=1 per arm, missing-arm guard; the no-peek test now
+  also asserts the CI reads AT day 2).
 
 ---
 
