@@ -44,6 +44,35 @@ superseded — its "SHIP ✅" was a dev-pool read and is now advisory-only by co
 - **User's parallel jobs:** vote daily (✧ cards especially); DON'T peek at the interleave lean
   before the day-14 read; the gate verdict returns when ~40 post-cutoff votes accumulate.
 
+### OPEN DESIGN QUESTIONS — for the NEXT deliberate re-freeze, NOT this window
+
+These are recorded to preserve the thought, not to act on. Each was raised **after** seeing a
+result, so acting on any of them now = laundering a loss into a metric change (the exact thing the
+prospective freeze exists to stop). Resolve only at a deliberate re-freeze: decide on principle,
+write the reasoning **before** re-running, move `GATE_CUTOFF` forward, and re-earn the verdict on
+fresh post-cutoff votes.
+
+1. **Is `char_len` a fair strongest-baseline? (raised 2026-07-15, after the n=210 HOLD)**
+   `char_len` is a confounder *control* — regressed in at train, **dropped at predict**, so the
+   ranker is forbidden from using length. The gate then makes it the bar to beat. Question: is
+   "beat a signal you're banned from using" the right guardrail, or should `char_len` be demoted to
+   a *reported confound* with the bar set to the ranker's own domain (keyword / recency /
+   author-prior)?
+   - **Evidence that motivated it (so a future reviewer can weigh the bias):** over all 1,147
+     votes, `rubric` beats `char_len` in *every* length band — <200: 0.667 vs 0.632; 200–600:
+     0.636 vs 0.523 — yet **ties in aggregate** (0.721 vs 0.703). Classic Simpson's paradox: the
+     all-pairs metric is dominated by the between-band length axis, which `char_len` owns for free
+     and the ranker (banned from length) can only approximate. The length-band advisory cut shows
+     the same thing (`rubric` diff-CI vs recency excludes 0 in-band).
+   - **The counter-argument that keeps it as-is:** if a dumb length heuristic predicts the votes as
+     well as the model, then on *this* pool the model isn't adding predictive value, and a
+     conservative guardrail is right to say so. Both sides are legitimate — this is a genuine design
+     call, not a bug.
+   - **Honesty check before acting:** would this critique have been written down *before* it was
+     known to be the thing beating the ranker? If it can't be answered yes, weight it accordingly.
+   - **Does not block anything now:** the interleave uses a different baseline (keyword) and metric
+     (served credit), is not length-dominated, and remains the verdict-maker regardless.
+
 ---
 
 ## 2026-07-08 state (M13 rebuild) — superseded by the 2026-07-14 prospective freeze
