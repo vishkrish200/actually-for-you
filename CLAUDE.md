@@ -51,13 +51,19 @@ accounts for that; they print as an advisory regression read and can NEVER verdi
 post-cutoff votes feed the gate. Move the cutoff only forward, and only when re-freezing after
 a deliberate gate-design change.
 
-**Interleave confirmatory window (frozen 2026-07-14, `WINDOW_START = 2026-07-15`,
-`HORIZON_DAYS = 14`):** everything before the window is the pilot (the credit formula changed
-mid-flight watching it; final pilot read: TIED at n=83). In-window, the CI prints ONCE, at the
-predeclared horizon — never "run until it excludes 0" (optional stopping manufactures leans).
-If the 30-judged-event floor isn't met at the horizon the window extends on n, never on the
-lean. Opens AND votes both key to a tweet's arm-attributed FIRST serve (a cross-arm re-serve
-must not split numerator and denominator). Changing matchup/formula/floor restarts the window.
+**Interleave confirmatory window (re-frozen 2026-07-15, `WINDOW_START = 2026-07-16`,
+`HORIZON_DAYS = 14`):** matchup is **mix vs review-lr**; credit formula and floor UNCHANGED from
+the 2026-07-14 freeze. The prior mix-vs-keyword window (started 2026-07-15) was superseded
+before its horizon WITHOUT a CI read (matchup change, not optional stopping); everything before
+that was the pilot (credit formula changed mid-flight; final pilot read: TIED at n=83). The
+review-lr arm is a frozen **recipe**, not frozen weights: training labels frozen (pre-cutoff
+reviews only), retrained daily on refreshed features (taste/prior/rubric drift daily exactly as
+mix's inputs do); changing the recipe (labels, feature set, C grid) = matchup change = new
+window. In-window, the CI prints ONCE, at the predeclared horizon — never "run until it
+excludes 0" (optional stopping manufactures leans). If the 30-judged-event floor isn't met at
+the horizon the window extends on n, never on the lean. Opens AND votes both key to a tweet's
+arm-attributed FIRST serve (a cross-arm re-serve must not split numerator and denominator).
+Changing matchup/formula/floor restarts the window.
 
 The author-prior arm (M9 prior run solo, engagement_labels only) is the behavior-only bar:
 "does content modeling add anything over WHO posted?" — a baseline, never a shipper.

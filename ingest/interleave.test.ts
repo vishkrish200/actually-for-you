@@ -73,7 +73,9 @@ describe("M11 team-draft interleaving (digest side)", () => {
     // limit 6 → exploreN 1, slots 5: five of the six candidates are drafted (mix takes mx1/mx2,
     // keyword takes kw2/kw3/kw1 in the seeded pick order), the leftover mx3 rides the explore lane
     // (interleaved at index 2), arm=null. The badge is blind — every row still carries a mix score.
-    const items = buildDigest(seed(), { limit: 6, seed: "day1" }); // default MATCHUP = ["mix","keyword"]
+    // matchup pinned to ["mix","keyword"]: this snapshot asserts team-draft MECHANICS (seeded pick
+    // order, weave, blindness), not the live default (now ["mix","review_lr"] — M14 re-freeze).
+    const items = buildDigest(seed(), { limit: 6, seed: "day1", matchup: ["mix", "keyword"] });
     const slate = items.map(i => [i.tweet_id, i.lane, i.arm] as const);
     assert.deepEqual(slate, [
       ["mx1", "taste", "mix"],
@@ -86,7 +88,7 @@ describe("M11 team-draft interleaving (digest side)", () => {
   });
 
   it("both arms appear; no tweet is drafted twice; explore rows carry arm=null", () => {
-    const items = buildDigest(seed(), { limit: 6, seed: "day1" });
+    const items = buildDigest(seed(), { limit: 6, seed: "day1", matchup: ["mix", "keyword"] });
     const drafted = items.filter(i => i.lane === "taste");
     const armsSeen = new Set(drafted.map(i => i.arm));
     assert.ok(armsSeen.has("mix") && armsSeen.has("keyword"), "both matchup arms drafted at least one slot");
@@ -99,8 +101,8 @@ describe("M11 team-draft interleaving (digest side)", () => {
   it("explore lane survives interleaving (~10%, present, deterministic per seed)", () => {
     // limit 6 → exploreN = round(6/10) = 1, slots = 5. Six candidates: five drafted, the un-drafted
     // tail (mx3) surfaces via explore. Explore must still exist, be interleaved, and be arm=null.
-    const a = buildDigest(seed(), { limit: 6, seed: "day1" });
-    const b = buildDigest(seed(), { limit: 6, seed: "day1" });
+    const a = buildDigest(seed(), { limit: 6, seed: "day1", matchup: ["mix", "keyword"] });
+    const b = buildDigest(seed(), { limit: 6, seed: "day1", matchup: ["mix", "keyword"] });
     assert.deepEqual(a.map(i => [i.tweet_id, i.lane, i.arm]), b.map(i => [i.tweet_id, i.lane, i.arm]),
       "interleaved digest is deterministic per seed (explore included)");
     const explore = a.filter(i => i.lane === "explore");

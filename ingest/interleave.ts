@@ -20,11 +20,13 @@
 // the only judgments; below the floor the point estimate is noise) — prints the count and the floor,
 // loudly. (2) The lean is a paired seeded-bootstrap CI over DAYS (the independent trials); a CI that
 // straddles 0 prints TIED, same doctrine as eval.ts's diff CI. (3) Coverage counts always print, so
-// a thin comparison reads as thin by construction. (4) CONFIRMATORY WINDOW (frozen 2026-07-14):
-// serves before WINDOW_START were the pilot — the credit formula changed mid-flight while watching
-// them, so they can't verdict. The window reads only in-window serves, and the CI prints ONCE, at
-// the predeclared HORIZON_DAYS — never "run until the CI excludes 0" (optional stopping manufactures
-// leans). If the judged floor isn't met at the horizon, the window EXTENDS on n, never on the lean.
+// a thin comparison reads as thin by construction. (4) CONFIRMATORY WINDOW (frozen 2026-07-14;
+// re-frozen 2026-07-15 for the mix-vs-review_lr matchup — see the WINDOW_START block below):
+// serves before WINDOW_START can't verdict — the pilot's credit formula changed mid-flight, and the
+// superseded mix-vs-keyword day belongs to a different matchup. The window reads only in-window
+// serves, and the CI prints ONCE, at the predeclared HORIZON_DAYS — never "run until the CI
+// excludes 0" (optional stopping manufactures leans). If the judged floor isn't met at the horizon,
+// the window EXTENDS on n, never on the lean.
 // Determinism: seeded PRNG, NO Math.random.
 import type { DatabaseSync } from "node:sqlite";
 
@@ -33,12 +35,20 @@ import type { DatabaseSync } from "node:sqlite";
 // the plan pins the floor at 30. Coverage still prints so you can watch it climb toward the floor.
 export const JUDGED_FLOOR = 30;
 
-// Confirmatory window, predeclared 2026-07-14 (same freeze as eval.ts's GATE_CUTOFF): matchup
-// mix-vs-keyword, credit = opens + 👍 − 👎, floor 30 — all frozen BEFORE any in-window serve.
-// Serves with digest_date before WINDOW_START are the pilot (formula chosen watching them) and are
-// excluded. The CI reads once, when HORIZON_DAYS distinct digest days have served in-window.
-// Changing the matchup, the credit formula, or the floor restarts the window at a new start date.
-export const WINDOW_START = "2026-07-15";
+// Confirmatory window, RE-FROZEN 2026-07-15, recorded BEFORE any in-window serve: matchup
+// mix-vs-review_lr, credit = opens + 👍 − 👎 and floor 30 both UNCHANGED from the 2026-07-14
+// freeze — only the matchup changed. The prior mix-vs-keyword window (started 2026-07-15) is
+// superseded before its horizon WITHOUT a CI read: no peeking occurred — this is a matchup change,
+// not optional stopping. The review_lr arm enters as a frozen RECIPE, not frozen weights: its
+// training labels are frozen (pre-cutoff hand votes only — eval.ts GATE_CUTOFF, the "spent dev
+// currency" amendment) while the model retrains daily on refreshed features (taste/prior/rubric
+// drift daily exactly as mix's inputs do). Changing the recipe (labels, feature set, C grid) is a
+// matchup change and opens a NEW window.
+// Serves with digest_date before WINDOW_START are excluded (pre-2026-07-15: the pilot, formula
+// chosen watching it; 2026-07-15 itself: the superseded mix-vs-keyword day). The CI reads once,
+// when HORIZON_DAYS distinct digest days have served in-window. Changing the matchup, the credit
+// formula, or the floor restarts the window at a new start date.
+export const WINDOW_START = "2026-07-16";
 export const HORIZON_DAYS = 14;
 
 // Arm-attributed FIRST serve per tweet within the window: the earliest in-window serve that a team

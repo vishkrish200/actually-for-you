@@ -316,9 +316,10 @@ describe("M10 digest telemetry", () => {
 
 // ---- M11: digest_log serve rows carry the drafting `arm` (team-draft interleaving) ----
 describe("M11 digest_log arm attribution", () => {
-  it("a served digest writes arm on taste rows (mix|keyword under the live MATCHUP), null on explore", async () => {
-    // Enough distinct-token candidates that the live MATCHUP=["mix","keyword"] draft produces a
-    // multi-card slate; each taste slot must be stamped with the arm that drafted it, explore null.
+  it("a served digest writes arm on taste rows (the live MATCHUP's arms), null on explore", async () => {
+    // Enough distinct-token candidates that the live MATCHUP draft produces a multi-card slate;
+    // each taste slot must be stamped with the arm that drafted it, explore null. Asserted against
+    // the imported MATCHUP const so a deliberate matchup change doesn't need a test relock.
     const m11ids = ["m11-a", "m11-b", "m11-c", "m11-d"];
     await post({ tweets: [
       { ...tweet, tweet_id: "m11-a", text: "an ai llm agent model reasoning benchmark with many tokens here" },
@@ -332,11 +333,13 @@ describe("M11 digest_log arm attribution", () => {
     const rows = db.prepare("SELECT tweet_id, lane, arm FROM digest_log WHERE rowid > ? ORDER BY rank").all(before) as any[];
     assert.equal(rows.length, json.items.length, "one log row per served card, including the new arm column");
     // Taste rows carry a real arm from the matchup; explore rows are arm-agnostic (null).
+    const { MATCHUP } = await import("./digest.ts");
+    const arms = new Set<string>(MATCHUP ?? []);
     for (const r of rows) {
       if (r.lane === "explore") assert.equal(r.arm, null, "explore serve row has arm=null");
-      else assert.ok(r.arm === "mix" || r.arm === "keyword", `taste serve row carries a matchup arm, got ${r.arm}`);
+      else assert.ok(arms.has(r.arm), `taste serve row carries a matchup arm, got ${r.arm}`);
     }
-    assert.ok(rows.some(r => r.arm === "mix" || r.arm === "keyword"), "at least one arm-attributed serve row was logged");
+    assert.ok(rows.some(r => arms.has(r.arm)), "at least one arm-attributed serve row was logged");
     // The logged arm matches what buildDigest put on the served item (no drift between serve + log).
     const byId = new Map(rows.map(r => [r.tweet_id, r.arm]));
     for (const it of json.items) assert.equal(byId.get(it.tweet_id), it.arm ?? null, `arm logged == item.arm for ${it.tweet_id}`);

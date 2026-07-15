@@ -12,10 +12,13 @@
 // The output carries eval.ts's GATE_CUTOFF alongside the rows ({cutoff, rows}) so review_lr.py
 // never hardcodes its own copy of the boundary — a re-freeze that moves eval.ts's cutoff moves
 // the python's train set with it, by construction.
+// M14 online arm: also emits a `candidates` array (predict-only, no y) — the digest's own
+// candidate pool via digest.candidateRows, so review_lr.py can score exactly what the digest
+// ranks. `--days N` (default 7) windows it: a superset of the serve windows (teaser uses 2).
 import { DatabaseSync } from "node:sqlite";
 import { buildLabels } from "./labels.ts";
 import { loadRubricScores } from "./rubric.ts";
-import { buildTaste, buildAuthorPrior, scoreText } from "./digest.ts";
+import { buildTaste, buildAuthorPrior, scoreText, candidateRows } from "./digest.ts";
 import { GATE_CUTOFF } from "./eval.ts";
 
 interface DumpRow {
@@ -51,4 +54,22 @@ const out: DumpRow[] = rows.map(r => ({
   prior: prior.get(r.author_id) ?? 0,
 }));
 
-console.log(JSON.stringify({ cutoff: GATE_CUTOFF, rows: out }));
+// Predict-only candidates: the digest's own pool (candidateRows excludes reviewed tweets, so this
+// is disjoint from `rows` — review_lr_scores' PRIMARY KEY stays safe). Same feature columns, no y.
+const daysFlag = process.argv.indexOf("--days");
+const days = daysFlag >= 0 ? Math.max(0, parseInt(process.argv[daysFlag + 1] ?? "7", 10) || 0) : 7;
+type CandidateRow = Omit<DumpRow, "y" | "review_ts">;
+const candidates: CandidateRow[] = candidateRows(db, days, Date.now(), prior).map((r: any) => ({
+  tweet_id: r.tweet_id,
+  text: r.text,
+  char_len: (r.text as string).length,
+  media_present: (r.media && r.media !== "" && r.media !== "[]" ? 1 : 0) as 0 | 1,
+  // ponytail: candidateRows doesn't select is_thread and the value is never read at predict (the
+  // controls' coefficients are dropped) — 0 is fine until someone trains on candidates (never).
+  is_thread: 0,
+  rubric: rubric.scores.get(r.tweet_id) ?? null,
+  taste: scoreText(r.text, taste),
+  prior: prior.get(r.author_id ?? "") ?? 0,
+}));
+
+console.log(JSON.stringify({ cutoff: GATE_CUTOFF, rows: out, candidates }));

@@ -96,13 +96,15 @@ export function mixFinal(
 // into `npm run interleave`, which judges by opens+👍. This COMPARES rankers — it never mints
 // labels (votes stay the only gold; the keyword arm on the product surface is still never a label
 // source), and the explore lane is untouched (arm=null, ~10%, day-seeded — the invariant holds).
-export type Arm = "mix" | "keyword" | "taste";
+export type Arm = "mix" | "keyword" | "taste" | "review_lr";
 
 // THE matchup, pinned by a named const (the plan's design point). null = plain M9 mix digest —
-// today's behavior, EXACTLY (regression-tested byte-for-byte). First matchup: the offline champion
-// (keyword) meets the live product ranker (mix) on the user's own feed. Change this const to swap
+// today's behavior, EXACTLY (regression-tested byte-for-byte). Change this const to swap
 // matchups; buildDigest takes an override param so tests can pin either state without a global edit.
-export const MATCHUP: readonly [Arm, Arm] | null = ["mix", "keyword"];
+// Current matchup (window re-frozen 2026-07-15, WINDOW_START 2026-07-16 — interleave.ts): the
+// offline SHIP-gate clearer review_lr meets the live product ranker (mix). The prior mix-vs-keyword
+// window was superseded before its horizon without a CI read (matchup change, not optional stopping).
+export const MATCHUP: readonly [Arm, Arm] | null = ["mix", "review_lr"];
 
 // An arm scorer orders a candidate that already carries its pool-wide mix score/parts. Higher =
 // better for that arm. mix = the M9 blend (what the digest ships); keyword = AI_LEXICON hit count
@@ -110,11 +112,25 @@ export const MATCHUP: readonly [Arm, Arm] | null = ["mix", "keyword"];
 // same as eval.ts's lexiconScore); taste = the taste part alone (a positive-weighted monotonic
 // transform of z(cosine), so ranking by parts.taste == ranking by the raw cosine — the pre-M9
 // shipped ranker as an arm). Text is lowercased once per candidate for the keyword arm.
-const ARM_SCORERS: Record<Arm, (c: { text: string; score: number; parts: MixParts }) => number> = {
+const ARM_SCORERS: Partial<Record<Arm, (c: { text: string; score: number; parts: MixParts }) => number>> = {
   mix: (c) => c.score,
   keyword: (c) => { const t = c.text.toLowerCase(); return AI_LEXICON.reduce((n, kw) => n + (t.includes(kw) ? 1 : 0), 0); },
   taste: (c) => c.parts.taste,
 };
+
+// M14 review_lr arm: scores come from the EXTERNAL review_lr_scores table (review_lr.py, retrained
+// daily by daily.ts on frozen pre-cutoff labels — the recipe freeze, see interleave.ts). A candidate
+// missing from the map scores the MEAN of the scores present in the CURRENT pool — pool-neutral,
+// never rank-last: the online arm has no -1 sentinel (that is eval's display contract; here a
+// missing feature must not torpedo a card, mirroring the mix's z=0 missing-rubric doctrine). An
+// empty/absent table degrades to mean 0 for everyone → deterministic tweet_id tiebreak order.
+function reviewLrScorer(
+  pool: { tweet_id: string }[], scores: Map<string, number>,
+): (c: { tweet_id: string }) => number {
+  const present = pool.filter(c => scores.has(c.tweet_id)).map(c => scores.get(c.tweet_id)!);
+  const mean = present.length ? present.reduce((a, b) => a + b, 0) / present.length : 0;
+  return (c) => scores.get(c.tweet_id) ?? mean;
+}
 
 // Order the pool by one arm, then diversify with the SAME MMR the mix digest uses (the plan:
 // "diversify each arm's ranking with the existing MMR first, then draft"). We rank on the arm's
@@ -123,8 +139,12 @@ const ARM_SCORERS: Record<Arm, (c: { text: string; score: number; parts: MixPart
 // returned items still carry the real mix score/parts (diversify never mutates them) — blind
 // serving intact. Stable tiebreak on tweet_id (eval.ts convention) so equal-scoring rows — very
 // common for the integer-valued keyword arm — order deterministically, not by input/JS-sort luck.
-function armRanking(candidates: DigestItem[], arm: Arm, slots: number): DigestItem[] {
-  const score = ARM_SCORERS[arm];
+export function armRanking(
+  candidates: DigestItem[], arm: Arm, slots: number, reviewLr?: Map<string, number>,
+): DigestItem[] {
+  const score = arm === "review_lr"
+    ? reviewLrScorer(candidates, reviewLr ?? new Map())
+    : ARM_SCORERS[arm]!;
   const ranked = candidates
     .map(c => ({ c, s: score(c) }))
     .sort((a, b) => b.s - a.s || (a.c.tweet_id < b.c.tweet_id ? -1 : 1))
@@ -344,7 +364,8 @@ function diversify(items: DigestItem[], lambda = 0.75, limit = 50): DigestItem[]
 // The candidate predicate is deliberately factored out because the recall probe needs the same
 // definition when it reconstructs an older digest run. `nowMs` is injected by the server so the
 // digest and its run ledger describe the exact same instant.
-function candidateRows(db: DatabaseSync, days: number, nowMs: number, prior: Map<string, number>): any[] {
+// Exported for review_lr_dump.ts, which must score EXACTLY the pool the digest will rank.
+export function candidateRows(db: DatabaseSync, days: number, nowMs: number, prior: Map<string, number>): any[] {
   const rows = db.prepare(`
     SELECT tweet_id, author_id, author_handle, author_name, author_profile, text, media, quoted_id, created_at, likes, rts, replies, views, source FROM tweets
     WHERE text IS NOT NULL AND text != ''
@@ -445,12 +466,29 @@ export function buildDigest(
     picked = diversify(scored, 0.75, slots);
   } else {
     const [armA, armB] = matchup;
+    // M14: the review_lr arm's scores live in the external review_lr_scores table (written by
+    // review_lr.py; refreshed daily by daily.ts). Read-tolerant: a missing table is an empty map
+    // and every candidate falls to the pool-mean fallback — the digest must never block on it.
+    let reviewLr = new Map<string, number>();
+    if (armA === "review_lr" || armB === "review_lr") {
+      try {
+        const rows = db.prepare(`SELECT tweet_id, score FROM review_lr_scores`).all() as
+          { tweet_id: string; score: number }[];
+        reviewLr = new Map(rows.map(r => [r.tweet_id, r.score]));
+      } catch { /* table not created yet — pool-mean fallback for the whole pool */ }
+      const missing = candidates.filter(c => !reviewLr.has(c.tweet_id)).length;
+      if (missing * 10 > candidates.length) {
+        console.warn(`[digest] review_lr scores cover only ${candidates.length - missing}/` +
+          `${candidates.length} candidates — uncovered cards score pool-mean (arm is flying ` +
+          `partially blind). Refresh: review_lr_dump.ts + review_lr.py (daily.ts runs both).`);
+      }
+    }
     // Each arm ranks the whole filtered pool (no score>0 pre-filter: an arm may legitimately rank
     // a below-mix-mean tweet first — e.g. keyword loves a high-AI-density tweet the mix docks on a
     // cold author — and the draft, not a mix threshold, decides the slate). MMR-diversify each arm's
     // list to `slots`, then team-draft. Explore still surfaces the truly un-drafted tail below.
-    const rankA = armRanking(candidates as DigestItem[], armA, slots);
-    const rankB = armRanking(candidates as DigestItem[], armB, slots);
+    const rankA = armRanking(candidates as DigestItem[], armA, slots, reviewLr);
+    const rankB = armRanking(candidates as DigestItem[], armB, slots, reviewLr);
     picked = teamDraft(rankA, rankB, armA, armB, seed, slots);
   }
 

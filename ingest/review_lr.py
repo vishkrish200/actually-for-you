@@ -7,10 +7,11 @@
 # tree): reads AFY_DB, writes ONE table (review_lr_scores), never touches raw events. Eval treats
 # a missing score as the -1 rank-last sentinel, so a partial run degrades, never blocks.
 #
-# Input is review_lr_dump.ts's JSON (argv[1]), shape {cutoff, rows}: one row per hand-reviewed
-# tweet carrying the SAME features the M9 mix uses (rubric score, taste cosine, author prior) plus
-# the confounder controls (char_len/media_present/is_thread). TS computed those; this script only
-# trains + predicts.
+# Input is review_lr_dump.ts's JSON (argv[1]), shape {cutoff, rows, candidates}: `rows` is one row
+# per hand-reviewed tweet carrying the SAME features the M9 mix uses (rubric score, taste cosine,
+# author prior) plus the confounder controls (char_len/media_present/is_thread); `candidates` is
+# the digest's own candidate pool, predict-only (no y — never trained on). TS computed the
+# features; this script only trains + predicts.
 #
 # THE INTEGRITY BOUNDARY (CLAUDE.md 2026-07-15 amendment — "spent dev currency"): TRAIN ONLY on
 # rows with review_ts < the cutoff, string-compared EXACTLY like eval.ts's isDev(). The cutoff is
@@ -48,8 +49,14 @@ with open(sys.argv[1]) as f:
 # train boundary and the gate boundary cannot diverge.
 GATE_CUTOFF = dump["cutoff"]
 pool = dump["rows"]
+# Predict-only candidates (the digest's own pool, M14 online arm) — NEVER trained on: no y, and
+# candidateRows excludes reviewed tweets so they are disjoint from the labeled rows by construction
+# (asserted below because the PRIMARY KEY write depends on it).
+candidates = dump.get("candidates", [])
 assert GATE_CUTOFF and isinstance(GATE_CUTOFF, str), "dump missing cutoff — re-run review_lr_dump.ts"
 assert pool, "empty review pool dump — run review_lr_dump.ts first"
+overlap = {r["tweet_id"] for r in pool} & {c["tweet_id"] for c in candidates}
+assert not overlap, f"candidates overlap the review pool ({len(overlap)} ids) — dump is broken"
 print(f"[review-lr] gate cutoff (piped from eval.ts GATE_CUTOFF): {GATE_CUTOFF}")
 
 # ---- train/pool split — the integrity boundary ----
@@ -62,12 +69,15 @@ assert len(train) < len(pool), (
 )
 n_pos = sum(r["y"] for r in train)
 print(f"[review-lr] train set (pre-cutoff, dev-only): {len(train)} reviews "
-      f"({n_pos} pos / {len(train) - n_pos} neg) of {len(pool)} total review-pool rows")
+      f"({n_pos} pos / {len(train) - n_pos} neg) of {len(pool)} total review-pool rows; "
+      f"{len(candidates)} predict-only digest candidates")
 
-# ---- embed everything once ----
+# ---- embed everything once (labeled pool + predict-only candidates) ----
 st = SentenceTransformer(MODEL)
 encode = lambda texts: st.encode(texts, normalize_embeddings=True, show_progress_bar=False)
-pool_emb = encode([r["text"] for r in pool])
+score_rows = pool + candidates  # everything that gets a score; train stays pool-only
+all_emb = encode([r["text"] for r in score_rows])
+pool_emb = all_emb[: len(pool)]
 emb_by_id = {r["tweet_id"]: pool_emb[i] for i, r in enumerate(pool)}
 
 
@@ -153,9 +163,10 @@ print(f"[review-lr] train-set AUC (apparent, controls in, C={chosen_C}) = {train
 print(f"[review-lr] dev-internal time-split val AUC (chosen C) = "
       f"{'n/a' if np.isnan(best_val_auc) else f'{best_val_auc:.4f}'}  — TRAIN-SET READ, NOT THE GATE")
 
-# ---- PREDICT for the ENTIRE pool: non-control coefficients only, intercept kept ----
-X_pool = build_X(pool, pool_emb)
-scores = X_pool[:, :N_NONCONTROL] @ lr.coef_[0, :N_NONCONTROL] + lr.intercept_[0]
+# ---- PREDICT for the review pool AND the digest candidates: non-control coefficients only,
+# intercept kept. score_rows = pool + candidates (train never saw the candidates — no y exists).
+X_all = build_X(score_rows, all_emb)
+scores = X_all[:, :N_NONCONTROL] @ lr.coef_[0, :N_NONCONTROL] + lr.intercept_[0]
 
 db = sqlite3.connect(os.environ.get("AFY_DB", "afy.db"))
 db.execute("CREATE TABLE IF NOT EXISTS review_lr_scores (tweet_id TEXT PRIMARY KEY, model TEXT, score REAL)")
@@ -163,12 +174,14 @@ db.execute("DELETE FROM review_lr_scores")  # one experiment at a time; the mode
 model_name = f"review-lr {MODEL}+rubric+taste+prior C={chosen_C}"
 db.executemany(
     "INSERT INTO review_lr_scores (tweet_id, model, score) VALUES (?, ?, ?)",
-    [(r["tweet_id"], model_name, float(s)) for r, s in zip(pool, scores)],
+    [(r["tweet_id"], model_name, float(s)) for r, s in zip(score_rows, scores)],
 )
 db.commit()
 
-# ponytail check: full coverage of the review pool, and the model actually separates something.
+# ponytail check: full coverage of BOTH sets (review pool for eval, candidates for the digest
+# arm), and the model actually separates something.
 n = db.execute("SELECT count(*) FROM review_lr_scores").fetchone()[0]
-assert n == len(pool), f"coverage {n}/{len(pool)}"
+assert n == len(score_rows), f"coverage {n}/{len(score_rows)} (pool {len(pool)} + candidates {len(candidates)})"
 assert float(np.std(scores)) > 0, "degenerate scores"
-print(f"[review-lr] wrote {n} scores to review_lr_scores as {model_name!r} (std {np.std(scores):.4f})")
+print(f"[review-lr] wrote {n} scores ({len(pool)} review-pool + {len(candidates)} candidates) to "
+      f"review_lr_scores as {model_name!r} (std {np.std(scores):.4f})")

@@ -2,7 +2,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { buildTaste, scoreText, buildDigest, buildAuthorPrior, zscores, mixFinal, MIX_WEIGHTS, Z_CLAMP } from "./digest.ts";
+import { buildTaste, scoreText, buildDigest, buildAuthorPrior, zscores, mixFinal, MIX_WEIGHTS, Z_CLAMP, armRanking } from "./digest.ts";
 import { ensureSchema } from "./rubric.ts";
 
 function seed(): DatabaseSync {
@@ -316,5 +316,42 @@ describe("M9 weighted mix (named knobs)", () => {
     assert.equal(mAuth.parts.rubric, 0, "missing rubric contributes exactly 0 — neutral, not −1");
     const mRub = items.find(i => i.tweet_id === "M_rub")!;
     assert.equal(mRub.parts.rubric, MIX_WEIGHTS.rubric * 1, "scored 10 → z=+1 → weighted +0.3");
+  });
+});
+
+// ---- M14: review_lr arm — external score table + pool-mean fallback (order-sensitive → snapshot) ----
+describe("review_lr arm ranking", () => {
+  // Minimal DigestItem stand-ins: armRanking reads tweet_id, text (MMR tokens), score/parts.
+  // Texts share zero tokens so the MMR overlap penalty is 0 and pure score order survives diversify.
+  const mk = (id: string, text: string) => ({
+    tweet_id: id, author_handle: null, author_name: null, text, media: [], quoted: null,
+    created_at: null, likes: null, rts: null, replies: null, views: null,
+    score: 0, parts: { taste: 0, rubric: 0, author: 0 }, lane: "taste", arm: null,
+  }) as any;
+  const cands = [
+    mk("a", "alpha bravo charlie delta"),
+    mk("b", "echo foxtrot golf hotel"),
+    mk("c", "india juliet kilo lima"),
+    mk("d", "mike november oscar papa"),
+  ];
+
+  it("snapshot: orders by external score; a missing candidate lands mid-pack via the pool-mean fallback", () => {
+    // b has no score → mean(3, 1, 5) = 3 → ties a at 3; the stable tweet_id tiebreak puts a first.
+    // Asserted order: d(5), a(3), b(3 via fallback — mid-pack, NEVER rank-last), c(1).
+    const scores = new Map([["a", 3], ["c", 1], ["d", 5]]);
+    const order = armRanking(cands, "review_lr", 4, scores).map(i => i.tweet_id);
+    assert.deepEqual(order, ["d", "a", "b", "c"],
+      "external scores order the arm; the uncovered card scores the pool mean, not the bottom");
+  });
+
+  it("empty/absent score map degrades to the deterministic tweet_id tiebreak (all pool-mean 0)", () => {
+    const order = armRanking(cands, "review_lr", 4, new Map()).map(i => i.tweet_id);
+    assert.deepEqual(order, ["a", "b", "c", "d"], "no scores → all tie at mean 0 → tweet_id order");
+  });
+
+  it("armRanking restores the real mix score/parts on returned items (blind serving intact)", () => {
+    const scores = new Map([["a", 3], ["b", 2], ["c", 1], ["d", 5]]);
+    const out = armRanking(cands, "review_lr", 4, scores);
+    for (const it of out) assert.equal(it.score, 0, "arm score only ordered; the mix score survives");
   });
 });

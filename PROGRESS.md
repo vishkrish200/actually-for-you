@@ -5,6 +5,34 @@ Point new sessions at this file + the PRD for full context.
 
 ---
 
+## 2026-07-15 — review-lr enters the interleave (window re-freeze, recorded BEFORE first in-window serve)
+
+**Matchup changed: `MATCHUP = ["mix","review_lr"]`, `WINDOW_START = 2026-07-16`.** The
+mix-vs-keyword window that started 2026-07-15 is superseded before its horizon **without a CI
+read** — no peeking occurred; a matchup change is not optional stopping. Credit formula
+(opens + 👍 − 👎) and the 30-judged-event floor are UNCHANGED; `GATE_CUTOFF` does not move.
+
+- **Why review-lr earned the slot:** offline prospective SHIP (the first ever) — gate AUC
+  **0.7725** vs char_len 0.6930→**0.7006** (strongest baseline), diff CI **[+0.006, +0.139]**
+  excludes 0, at n=213 post-cutoff votes (92👍/121👎). Trained on pre-cutoff votes only per the
+  same-day "spent dev currency" amendment (see open-design-questions entry #3); its dev-pool
+  row (0.8416) is a train-set read and verdicted nothing.
+- **The arm is a frozen RECIPE, not frozen weights:** training labels frozen (pre-cutoff
+  reviews only, cutoff piped from eval.ts's `GATE_CUTOFF` through the dump so they cannot
+  diverge); the LR retrains daily (daily.ts → review_lr_dump.ts `--days 7` → uv run
+  review_lr.py) on refreshed features — taste/prior/rubric drift daily exactly as mix's inputs
+  do, so daily retraining is parity, not tuning. Changing the recipe (labels, feature set,
+  C grid) = a matchup change = a NEW window.
+- **Online fallback semantics (digest.ts):** a candidate missing from `review_lr_scores`
+  scores the pool MEAN (pool-neutral, mirrors mix's z=0 missing-rubric doctrine — the online
+  arm has no −1 sentinel; that is eval's display contract only). >10% uncovered prints a loud
+  warn; a missing table degrades to the deterministic tweet_id tiebreak. The refresh failure
+  mode never blocks the 08:00 digest (rubric's graceful contract, copied).
+- Ingest tests 117 → **120** green (armRanking snapshot: external-score order + mean-fallback
+  mid-pack landing + blind-serving check).
+
+---
+
 ## ▶ RESUME HERE (2026-07-14)
 
 **M14 prospective freeze SHIPPED: the eval stack stopped grading its own homework.** Triggered
