@@ -2,24 +2,28 @@
 # requires-python = ">=3.10"
 # dependencies = ["sentence-transformers", "scikit-learn"]
 # ///
-# M14 experiment — review-lr (dev-trained) arm. Same external-scorer contract as embed_score.py:
-# reads AFY_DB, writes ONE table (review_lr_scores), never touches raw events. Eval treats a
-# missing score as the -1 rank-last sentinel, so a partial run degrades, never blocks.
+# M14 experiment — review-lr (dev-trained) arm. External-scorer contract (the pattern piloted by
+# embed_score.py on the unmerged embed-taste branch — .claude/worktrees/embed-taste/, not in this
+# tree): reads AFY_DB, writes ONE table (review_lr_scores), never touches raw events. Eval treats
+# a missing score as the -1 rank-last sentinel, so a partial run degrades, never blocks.
 #
-# Input is review_lr_dump.ts's JSON (argv[1]): one row per hand-reviewed tweet carrying the SAME
-# features the M9 mix uses (rubric score, taste cosine, author prior) plus the confounder controls
-# (char_len/media_present/is_thread). TS computed those; this script only trains + predicts.
+# Input is review_lr_dump.ts's JSON (argv[1]), shape {cutoff, rows}: one row per hand-reviewed
+# tweet carrying the SAME features the M9 mix uses (rubric score, taste cosine, author prior) plus
+# the confounder controls (char_len/media_present/is_thread). TS computed those; this script only
+# trains + predicts.
 #
 # THE INTEGRITY BOUNDARY (CLAUDE.md 2026-07-15 amendment — "spent dev currency"): TRAIN ONLY on
-# rows with review_ts < GATE_CUTOFF, string-compared EXACTLY like eval.ts's isDev(). Rows with a
-# null review_ts or review_ts >= GATE_CUTOFF are NEVER trained on — get this wrong and the arm
-# trains on the same votes the prospective gate later verdicts on, which is the one thing the
-# 2026-07-14 freeze exists to prevent. Everything downstream (the printed AUCs, the model name) is
-# labeled "train-set read, not the gate" for the same reason.
+# rows with review_ts < the cutoff, string-compared EXACTLY like eval.ts's isDev(). The cutoff is
+# PIPED from eval.ts's GATE_CUTOFF through the dump JSON — never hardcoded here — so the two can't
+# diverge: a re-freeze that moves eval.ts's cutoff re-cuts this train set with it. Rows with a
+# null review_ts or review_ts >= cutoff are NEVER trained on — get this wrong and the arm trains
+# on the same votes the prospective gate later verdicts on, which is the one thing the 2026-07-14
+# freeze exists to prevent. Everything downstream (the printed AUCs, the model name) is labeled
+# "train-set read, not the gate" for the same reason.
 #
-# Confounder discipline (ranker_v1 / PRD §7.2, same pattern as embed_score.py lines ~82-93):
-# char_len/media_present/is_thread are regressed in AT FIT, then their coefficients are DROPPED at
-# predict — a control a ranker is forbidden from using must never earn score.
+# Confounder discipline (ranker_v1 / PRD §7.2, the same fit-then-slice pattern embed_score.py
+# uses): char_len/media_present/is_thread are regressed in AT FIT, then their coefficients are
+# DROPPED at predict — a control a ranker is forbidden from using must never earn score.
 #
 # ponytail: no LightGBM, no IPW — trees only enter if they beat LR on the internal time split.
 import json
@@ -33,15 +37,20 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 
 MODEL = "all-MiniLM-L6-v2"
-GATE_CUTOFF = "2026-07-15"  # eval.ts's GATE_CUTOFF constant, string-compared identically
 C_GRID = [0.01, 0.1, 1.0]
 
 if len(sys.argv) < 2:
     sys.exit("usage: uv run review_lr.py <dump.json>")
 
 with open(sys.argv[1]) as f:
-    pool = json.load(f)
+    dump = json.load(f)
+# The cutoff is piped from eval.ts's GATE_CUTOFF via review_lr_dump.ts — no literal here, so the
+# train boundary and the gate boundary cannot diverge.
+GATE_CUTOFF = dump["cutoff"]
+pool = dump["rows"]
+assert GATE_CUTOFF and isinstance(GATE_CUTOFF, str), "dump missing cutoff — re-run review_lr_dump.ts"
 assert pool, "empty review pool dump — run review_lr_dump.ts first"
+print(f"[review-lr] gate cutoff (piped from eval.ts GATE_CUTOFF): {GATE_CUTOFF}")
 
 # ---- train/pool split — the integrity boundary ----
 is_train = lambda r: r["review_ts"] is not None and r["review_ts"] < GATE_CUTOFF
@@ -75,6 +84,9 @@ def scalar4(rows: list[dict], rubric_mean: float) -> np.ndarray:
 
 train_rubric_present = [r["rubric"] for r in train if r["rubric"] is not None]
 rubric_mean = float(np.mean(train_rubric_present)) if train_rubric_present else 0.0
+# ponytail: these scaler stats are computed over the FULL train set, so the C-selection's val
+# split sees means/stds that include its own rows — a tiny within-dev peek, gate-irrelevant
+# (nothing post-cutoff is touched). Refit per-fold only if C-selection ever starts to matter.
 mu = scalar4(train, rubric_mean).mean(axis=0)
 sd = scalar4(train, rubric_mean).std(axis=0)
 sd[sd == 0] = 1.0  # degenerate-column guard (constant feature → no-op standardization)
@@ -82,7 +94,8 @@ sd[sd == 0] = 1.0  # degenerate-column guard (constant feature → no-op standar
 
 # X = [emb(384) | rubric_z, taste_z, prior_z, char_len_z | media_present, is_thread] (390 cols).
 # CONTROL columns are the LAST 3 (char_len_z, media_present, is_thread) — PREDICT drops exactly
-# those, matching embed_score.py's coef_[0, :emb.shape[1]] slice pattern, generalized to also keep
+# those, matching embed_score.py's coef_[0, :emb.shape[1]] slice pattern (see the sibling-worktree
+# note in the header — that file is not in this tree), generalized to also keep
 # the rubric/taste/prior weights (the non-control features).
 def build_X(rows: list[dict], emb: np.ndarray) -> np.ndarray:
     sc = (scalar4(rows, rubric_mean) - mu) / sd

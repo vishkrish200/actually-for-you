@@ -1,4 +1,5 @@
-// M14 experiment — review-lr dump. Prints the ONE JSON array review_lr.py trains/scores on: every
+// M14 experiment — review-lr dump. Prints the ONE JSON object ({cutoff, rows}) review_lr.py
+// trains/scores on: rows carries every
 // hand-reviewed tweet (latest verdict, from buildLabels' review_pos/review_neg kinds) carrying the
 // SAME features the M9 mix uses (rubric score, taste cosine, author prior) plus the confounder
 // controls (char_len/media_present/is_thread — train-only, per CLAUDE.md). TS owns feature
@@ -7,10 +8,15 @@
 //
 // Read-only: reuses buildLabels (labels.ts), loadRubricScores (rubric.ts), buildTaste/scoreText/
 // buildAuthorPrior (digest.ts) verbatim — no SQL duplicated here.
+//
+// The output carries eval.ts's GATE_CUTOFF alongside the rows ({cutoff, rows}) so review_lr.py
+// never hardcodes its own copy of the boundary — a re-freeze that moves eval.ts's cutoff moves
+// the python's train set with it, by construction.
 import { DatabaseSync } from "node:sqlite";
 import { buildLabels } from "./labels.ts";
 import { loadRubricScores } from "./rubric.ts";
 import { buildTaste, buildAuthorPrior, scoreText } from "./digest.ts";
+import { GATE_CUTOFF } from "./eval.ts";
 
 interface DumpRow {
   tweet_id: string;
@@ -45,4 +51,4 @@ const out: DumpRow[] = rows.map(r => ({
   prior: prior.get(r.author_id) ?? 0,
 }));
 
-console.log(JSON.stringify(out));
+console.log(JSON.stringify({ cutoff: GATE_CUTOFF, rows: out }));

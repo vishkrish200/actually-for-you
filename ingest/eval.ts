@@ -581,10 +581,29 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       scores: new Map(rows.map(r => [r.tweet_id, r.score])),
     };
   } catch { /* table not created yet — run review_lr_dump.ts + review_lr.py */ }
+  const labeled = buildLabels(db);
   console.log(formatEval(runEval(
-    buildLabels(db), loadRubricScores(db),
+    labeled, loadRubricScores(db),
     { taste: buildTaste(db), authorPrior: buildAuthorPrior(db) },
     loadRubricScoresBySha(db),
     reviewLr,
   )));
+  // Coverage guard for the review-lr arm — the rubric-coverage doctrine, one table over. The arm
+  // ranks a missing tweet last via the -1 sentinel, so a stale review_lr_scores (votes cast since
+  // the last review_lr.py run) silently poisons the gate with rank-last rows that say nothing
+  // about ranking quality. Print-only: the verdict logic is untouched, this just refuses to let a
+  // stale-score read pass unnoticed.
+  if (reviewLr) {
+    const poolIds = labeled
+      .filter(r => r.kind === "review_pos" || r.kind === "review_neg")
+      .map(r => r.tweet_id);
+    const missing = poolIds.filter(id => !reviewLr!.scores.has(id)).length;
+    console.log(`review-lr coverage: ${poolIds.length - missing}/${poolIds.length} review-pool tweets scored`);
+    if (missing > 0) {
+      console.log(
+        `⚠ review-lr scores STALE (missing ${missing} of ${poolIds.length} pool tweets — re-run ` +
+        `review_lr_dump.ts + review_lr.py); arm ranks them last`,
+      );
+    }
+  }
 }
