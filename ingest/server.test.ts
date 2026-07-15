@@ -343,6 +343,22 @@ describe("M11 digest_log arm attribution", () => {
   });
 });
 
+// ---- Vote ui_context: what the judge saw at vote time, stored per review row ----
+describe("review vote ui_context", () => {
+  it("stores context as JSON when sent, null when absent", async () => {
+    const ctx = { surface: "review", pos: 3, shown_dwell: 5200 };
+    let r = await req("POST", "/review", { tweet_id: "uc1", verdict: 1, ui_context: ctx });
+    assert.equal(r.status, 200);
+    r = await req("POST", "/review", { tweet_id: "uc2", verdict: -1 });
+    assert.equal(r.status, 200);
+    const rows = db.prepare(
+      "SELECT tweet_id, ui_context FROM reviews WHERE tweet_id IN ('uc1','uc2') ORDER BY tweet_id"
+    ).all() as any[];
+    assert.deepEqual(JSON.parse(rows[0].ui_context), ctx);
+    assert.equal(rows[1].ui_context, null);
+  });
+});
+
 // ---- Review queue format policy: replies only from high-like-prior authors ----
 describe("review queue reply filter", () => {
   it("drops cold-author replies, keeps originals and high-prior-author replies", async () => {

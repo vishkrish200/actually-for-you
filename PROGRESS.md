@@ -73,6 +73,33 @@ fresh post-cutoff votes.
    - **Does not block anything now:** the interleave uses a different baseline (keyword) and metric
      (served credit), is not length-dominated, and remains the verdict-maker regardless.
 
+2. **Is the review UI biasing the votes? — blind the judge (raised 2026-07-15)**
+   The judge is not blind: at vote time the UI displays cues correlated with exactly the axes
+   under debate. Channels found in code, not hypothesized: (a) review mode prints "⏱ Xs lingered"
+   above the vote buttons (client.html) — dwell is mechanically length-correlated, so every
+   review-mode vote is anchored on a length proxy; (b) in-flow digest votes see the rank number,
+   ✦ score percentile, and mix-parts tooltip — anchoring on the arm's own opinion inflates the
+   arm's measured AUC (note: this one biases FOR the ranker); (c) ✧ cards are labeled "outside
+   your taste profile" at vote time, so the blind-spot pool is judged knowing the ranker rejected
+   it; (d) selection: the review queue is the extreme tail of trusted-dwell sorted DESC over a
+   backlog thousands deep — the 12%→50%→94% up-rate-by-length curve is measured on a pool
+   already selected by a length-correlated variable.
+   - **Pre-registered prediction (written before any post-change data exists):** if the anchoring
+     is real, blinding the judge — hide the dwell line, score badge, rank, and lane label until
+     after the vote — should FLATTEN the length–uprate curve and shrink char_len's aggregate AUC
+     on post-blinding votes. If votes are pure taste, the curve should not move. Direction is
+     declared now precisely because this change would help the ranker against char_len — the
+     motivated-reasoning risk is the same as question 1 and gets the same treatment.
+   - **What shipped now (2026-07-15, observational only):** every vote now records what the judge
+     saw — `reviews.ui_context` JSON: surface (`digest`/`explore`/`review`), rank/pos,
+     shown_score, shown_dwell. Metadata for future stratification; nothing reads it at rank,
+     label, or eval time. Votes before today have `ui_context = NULL` (unknowable, kept honest).
+   - **What waits for the re-freeze (post-horizon):** the actual blinding. Votes feed interleave
+     credit, so a mid-window UI change touches the verdict-maker's inputs; ship it when moving
+     `GATE_CUTOFF`, note the date, and treat pre/post-blinding votes as separate strata.
+   - **Comfort:** the interleave compares arms under the SAME UI, so presentation bias mostly
+     cancels arm-vs-arm; the contamination story mainly touches the gate's length contest.
+
 ---
 
 ## 2026-07-08 state (M13 rebuild) — superseded by the 2026-07-14 prospective freeze

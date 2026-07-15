@@ -43,9 +43,14 @@ db.exec(`
   -- a changed mind is a new row, latest ts per tweet wins. +1 = "show me more like this",
   -- -1 = "don't want to see this". Distinct from passive impressions on purpose — this is
   -- reflective endorsement, not in-the-moment behavior (an intentional extension of PRD §7.2).
+  -- ui_context (2026-07-15): JSON snapshot of what the judge SAW when voting — surface
+  -- ('digest'|'explore'|'review'), rank/pos, shown_score, shown_dwell. The review UI displays
+  -- anchoring cues (dwell line, score badge, lane label) correlated with the confounders under
+  -- debate; this records them per vote so future analysis can stratify. Observational metadata
+  -- ONLY — never a feature, never a label input.
   CREATE TABLE IF NOT EXISTS reviews (
     rowid INTEGER PRIMARY KEY AUTOINCREMENT,
-    tweet_id TEXT, verdict INTEGER, ts TEXT
+    tweet_id TEXT, verdict INTEGER, ts TEXT, ui_context TEXT
   );
   -- Confirmed positives harvested from your own Likes / Bookmarks timelines. Membership in those
   -- lists IS an explicit endorsement — the strongest, least-biased positive label we have (no dwell,
@@ -110,6 +115,7 @@ try { db.exec("ALTER TABLE impressions ADD COLUMN negative_feedback INTEGER"); }
 // M11: nullable arm on digest_log for DBs created before the interleave column existed. Existing
 // rows get NULL (pre-M11 serves have no drafting arm — correct: they weren't drafted by one).
 try { db.exec("ALTER TABLE digest_log ADD COLUMN arm TEXT"); } catch { /* already present */ }
+try { db.exec("ALTER TABLE reviews ADD COLUMN ui_context TEXT"); } catch { /* already present */ }
 
 const stmts = {
   tweet: db.prepare(`
@@ -145,7 +151,7 @@ const stmts = {
     `INSERT INTO capture_health (ts, kind, detail) VALUES (?,?,?)`
   ),
   review: db.prepare(
-    `INSERT INTO reviews (tweet_id, verdict, ts) VALUES (?,?,?)`
+    `INSERT INTO reviews (tweet_id, verdict, ts, ui_context) VALUES (?,?,?,?)`
   ),
   engLabel: db.prepare(
     `INSERT OR IGNORE INTO engagement_labels (tweet_id, source, ts) VALUES (?,?,?)`
@@ -453,11 +459,12 @@ export const server = http.createServer(async (req, res) => {
     if (!authed(req, res)) return;
     const raw = await readBody(req);
     try {
-      const { tweet_id, verdict, ts } = JSON.parse(raw);
+      const { tweet_id, verdict, ts, ui_context } = JSON.parse(raw);
       if (typeof tweet_id !== "string" || (verdict !== 1 && verdict !== -1)) {
         throw new Error("tweet_id (string) and verdict (+1|-1) required");
       }
-      stmts.review.run(tweet_id, verdict, ts ?? new Date().toISOString());
+      stmts.review.run(tweet_id, verdict, ts ?? new Date().toISOString(),
+        ui_context && typeof ui_context === "object" ? JSON.stringify(ui_context) : null);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
     } catch (e) {
