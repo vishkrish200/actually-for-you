@@ -143,6 +143,20 @@ describe("rubric selection priority", () => {
     assert.equal(cands[0].tweet_id, "review_old", "review-pool tweet wins the single slot despite being older");
   });
 
+  it("--reviews-only scores the hand-signed pool and NOTHING else (the preeval contract)", () => {
+    const db = seed();
+    insTweet(db, { tweet_id: "review_old", text: "hand signed tweet worth covering", captured_at: "2020-01-01" });
+    db.prepare("INSERT INTO reviews (tweet_id, verdict, ts) VALUES (?,?,?)").run("review_old", 1, "2020-01-02");
+    insTweet(db, { tweet_id: "fresh_new", text: "a brand new candidate tweet", captured_at: "2026-12-31" });
+
+    // default mode takes both; reviews-only must never drag candidates into an eval run
+    const all = selectUnscored(db, rubricSha(RUBRIC), 500);
+    assert.deepEqual(all.map(c => c.tweet_id).sort(), ["fresh_new", "review_old"]);
+
+    const only = selectUnscored(db, rubricSha(RUBRIC), 500, true);
+    assert.deepEqual(only.map(c => c.tweet_id), ["review_old"], "candidates excluded — preeval bills nothing extra");
+  });
+
   it("skips empty-text rows entirely", () => {
     const db = seed();
     insTweet(db, { tweet_id: "empty", text: "" });

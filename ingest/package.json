@@ -10,6 +10,7 @@
     "interleave": "node --experimental-strip-types interleave.ts",
     "scorecard": "node --experimental-strip-types scorecard.ts",
     "recall": "node --experimental-strip-types recall.ts",
+    "preeval": "node --env-file-if-exists=.env.local --experimental-strip-types rubric.ts --reviews-only || true",
     "eval": "node --experimental-strip-types eval.ts",
     "probe": "node --experimental-strip-types probe.ts",
     "labels": "node --experimental-strip-types labels.ts",

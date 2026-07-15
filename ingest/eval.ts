@@ -215,6 +215,22 @@ const MIN_PER_CLASS = 10;
 const belowFloor = (nPos: number, nNeg: number) =>
   nPos + nNeg < REVIEW_MIN_N || Math.min(nPos, nNeg) < MIN_PER_CLASS;
 
+// ---- advisory cut: the length band where char_len is structurally blind ----
+// char_len wins the pools above on essentially ONE coarse call — "is this a sub-200-char one-liner?
+// → 👎". The 👍-rate climbs 12%→32% below 200 chars, then FLATTENS (48/49/50% across 200–600), and
+// char_len's own AUC inside 200–600 is 0.518 — chance. So the headline AUC mostly rewards a length
+// threshold, and says almost nothing about the band where 45% of the votes actually live.
+// This cut asks the question the headline cannot: does a candidate separate 👍 from 👎 WHERE LENGTH
+// ALONE CANNOT? char_len's own row here lands at ~0.5 by construction — the same built-in sanity
+// check keyword's 0.5 gives on the kw-tied column.
+//
+// ADVISORY, NEVER A GATE — two independently disqualifying reasons:
+//   1. the band edges were read off the DEV pool's up-rate curve, so the cut is dev-derived; and
+//   2. it was invented AFTER the gate returned HOLD. Promoting it to a bar a candidate must clear is
+//      a deliberate gate-design change — it costs a re-freeze with GATE_CUTOFF moved FORWARD.
+// It tells you WHERE the ranker fails. It can never tell you WHETHER it ships.
+const BAND_LO = 200, BAND_HI = 600;
+
 const pctile = (xs: number[], p: number) => [...xs].sort((a, b) => a - b)[Math.floor(p * (xs.length - 1))];
 
 // Paired bootstrap over ITEMS — pos indices and neg indices resampled with replacement — NOT over
@@ -331,7 +347,18 @@ export interface EvalResult {
   // a blind-spot read, though NOT an unbiased sample of the full candidate pool (eligibility is
   // conditioned on the rankers rejecting the card). Diagnostic.
   reviewAudit: PoolResult;
+  // Every hand-signed vote whose tweet falls in the 200–600 char band — the region where char_len
+  // is at chance (see BAND_LO/BAND_HI). Advisory diagnostic: "does the ranker have any content
+  // signal where length carries none?" Never read by the verdict.
+  reviewBand: PoolResult;
   rubricCoverage?: RubricCoverage;
+  // Rubric coverage ON THE GATE POOL specifically. The scorer runs on its own cadence, so a gate read
+  // taken right after a voting session sees freshly-signed tweets the LLM has not graded yet: the
+  // rubric arm ranks them by the -1 rank-last sentinel and mix loses one of its three inputs. That
+  // renders a spurious HOLD — the arms lose on missing FEATURES, not on bad ranking. Coverage on the
+  // full review pool (rubricCoverage) cannot catch this: it is dominated by the older, fully-scored
+  // votes and reads ~100% while the gate pool sits at 3%. Measure the pool that issues the verdict.
+  gateCoverage?: RubricCoverage;
   calibration: ShaCalibration[]; // per RUBRIC.md version, oldest first ([] when no scores passed)
 }
 
@@ -352,9 +379,10 @@ export function runEval(
   // THE gate: votes cast at-or-after GATE_CUTOFF only — no design decision has seen them.
   // Rows without a review_ts (fixtures) count as post-cutoff.
   const isDev = (r: LabeledRow) => !!r.review_ts && r.review_ts < GATE_CUTOFF;
+  const gatePos = reviewPos.filter(r => !isDev(r)), gateNeg = reviewNeg.filter(r => !isDev(r));
   const reviewGate = evalCut(
     `REVIEW-PROSPECTIVE (votes since ${GATE_CUTOFF}) — NON-CIRCULAR SHIP GATE`,
-    reviewPos.filter(r => !isDev(r)), reviewNeg.filter(r => !isDev(r)), rubric, mix);
+    gatePos, gateNeg, rubric, mix);
 
   // M12 audit: votes attributed to ✧ explore-lane serves ONLY — cards no ranker scored into the
   // slate (sampled from the rankers' rejects; ranker-conditioned, not an unbiased sample).
@@ -364,12 +392,27 @@ export function runEval(
   const reviewAudit = evalCut(
     "REVIEW-EXPLORE (✧-lane votes only) — RANKER-BLIND-SPOT AUDIT", auditPos, auditNeg, rubric, mix);
 
+  // Length-band cut: ALL votes (pre- and post-cutoff) whose tweet sits in the band where char_len is
+  // blind. Pooled deliberately — this is already advisory-only, and the whole point is to see where
+  // the ranker's content signal is, which wants every label we have.
+  const inBand = (r: LabeledRow) => r.char_len >= BAND_LO && r.char_len <= BAND_HI;
+  const reviewBand = evalCut(
+    `REVIEW-LENGTH-BAND (${BAND_LO}–${BAND_HI} chars — where char_len is blind) — ADVISORY, NEVER A VERDICT`,
+    reviewPos.filter(inBand), reviewNeg.filter(inBand), rubric, mix);
+
   // M8 coverage on the FULL review pool at the latest sha — the number that qualifies the rubric
   // verdict (measured against the same rows the arm ranks, so it can't over-claim).
   const reviewAll = [...reviewPos, ...reviewNeg];
   const rubricCoverage: RubricCoverage | undefined = rubric && {
     scored: reviewAll.filter(r => rubric.scores.has(r.tweet_id)).length,
     total: reviewAll.length,
+    sha: rubric.sha,
+  };
+  // Same measure, restricted to the rows that actually issue the verdict — see EvalResult.gateCoverage.
+  const gateAll = [...gatePos, ...gateNeg];
+  const gateCoverage: RubricCoverage | undefined = rubric && {
+    scored: gateAll.filter(r => rubric.scores.has(r.tweet_id)).length,
+    total: gateAll.length,
     sha: rubric.sha,
   };
 
@@ -380,7 +423,7 @@ export function runEval(
     .sort((a, b) => (a.firstTs < b.firstTs ? -1 : a.firstTs > b.firstTs ? 1 : 0))
     .map(sh => calibrationFor(sh, reviewPos, reviewNeg));
 
-  return { reviewOnly, reviewGate, reviewAudit, rubricCoverage, calibration };
+  return { reviewOnly, reviewGate, reviewAudit, reviewBand, rubricCoverage, gateCoverage, calibration };
 }
 
 // ---- formatting (▼-table aesthetic preserved) ----
@@ -456,6 +499,19 @@ export function formatEval(res: EvalResult): string {
   const coverage = formatRubricCoverage(res.rubricCoverage);
   const calibration = formatCalibration(res.calibration);
 
+  // STALE-FEATURE GUARD. A verdict is only meaningful if the arms had their features. When the gate
+  // pool is under-scored, the rubric arm ranks on the -1 sentinel and mix runs a third blind — both
+  // lose on missing data and the gate prints a HOLD that says nothing about ranking quality. This is
+  // a false-HOLD detector, not a bar: it never changes what clears, it only refuses to let a
+  // feature-starved read pass for a verdict. Fix is `npm run rubric`, then re-run — no gate change.
+  const gc = res.gateCoverage;
+  const staleFeatures = gc && gc.total > 0 && gc.scored < gc.total / 2
+    ? `⚠ STALE FEATURES — the rubric has scored only ${gc.scored}/${gc.total} of the GATE pool ` +
+      `(sha ${gc.sha?.slice(0, 6)}…). Unscored tweets rank last (-1 sentinel) for the rubric arm and go ` +
+      `pool-neutral inside mix, so those arms are being judged on missing data, not on bad ranking. ` +
+      `The verdict below is NOT trustworthy — run \`npm run rubric\` and re-run the eval.\n`
+    : "";
+
   // M12 audit pool: print the table only when it has both classes (an all-0.5 degenerate table is
   // noise), but ALWAYS print the note — refuse to let a thin n read as a verdict, same doctrine as
   // the interleave's judged-event floor.
@@ -471,6 +527,17 @@ export function formatEval(res: EvalResult): string {
   const devNote = `dev pool: advisory ONLY — the AUC metric, strongest-baseline policy and credit formula were ` +
     `chosen while inspecting these votes, so no CI here accounts for those choices. Regression read, never a verdict.`;
 
+  // Length-band cut: same doctrine as the audit pool — always print the note, print the table only
+  // when both classes are present. The note names the ONE thing this cut is for and the one thing it
+  // must never become.
+  const b = res.reviewBand;
+  const bandNote = belowFloor(b.nPos, b.nNeg)
+    ? `⏳ length-band cut too thin to read (${b.nPos} 👍 / ${b.nNeg} 👎, below floor) — keep voting.`
+    : `length band: char_len scores ~0.5 HERE by construction (that's the point — 👍-rate is flat across ` +
+      `${BAND_LO}–${BAND_HI}), so an arm above 0.5 is finding signal that length cannot. ADVISORY ONLY: the band ` +
+      `edges were read off the dev pool AND this cut postdates a HOLD — it says WHERE the ranker fails, never ` +
+      `whether it ships. Making it a bar to clear = a gate-design change = re-freeze, GATE_CUTOFF forward.`;
+
   return [
     ...(devDiffers ? [formatPool(dev), devNote, ""] : []),
     // an empty gate pool prints no degenerate all-0.5 table — the verdict line carries the state
@@ -480,6 +547,9 @@ export function formatEval(res: EvalResult): string {
     "",
     ...(a.pairs > 0 ? [formatPool(a), ""] : []),
     auditNote, "",
+    ...(b.pairs > 0 ? [formatPool(b), ""] : []),
+    bandNote, "",
+    ...(staleFeatures ? [staleFeatures] : []),
     gate + ciNote,
   ].join("\n");
 }

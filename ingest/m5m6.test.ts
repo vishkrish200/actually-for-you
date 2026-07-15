@@ -163,6 +163,50 @@ describe("AUC gate", () => {
     assert.match(formatEval(res), /HOLD/);
   });
 
+  it("length-band cut holds ONLY 200–600-char rows, and never issues the verdict", () => {
+    const rows: LabeledRow[] = [];
+    const scores = new Map<string, number>();
+    for (let i = 0; i < 30; i++) {
+      // in-band pair: char_len sits inside 200–600, so it lands in reviewBand
+      rows.push(P(`pin${i}`, { char_len: 300 })); rows.push(N(`nin${i}`, { char_len: 400 }));
+      // out-of-band pair: the one-liner / essay tails the cut exists to EXCLUDE
+      rows.push(P(`pout${i}`, { char_len: 50 })); rows.push(N(`nout${i}`, { char_len: 900 }));
+      scores.set(`pin${i}`, 9); scores.set(`nin${i}`, 1);
+      scores.set(`pout${i}`, 9); scores.set(`nout${i}`, 1);
+    }
+    const res = runEval(rows, { sha: "rig", scores });
+    assert.equal(res.reviewBand.nPos, 30, "only the 200–600 positives");
+    assert.equal(res.reviewBand.nNeg, 30, "only the 200–600 negatives");
+    assert.equal(res.reviewOnly.nPos, 60, "the dev pool still sees every row");
+    // rubric separates perfectly IN-BAND — but the band cut is advisory, so it must not mint a SHIP.
+    // The verdict reads reviewGate alone; here char_len is perfect on the gate pool → HOLD stands.
+    assert.ok(res.reviewBand.rows.find(r => r.name.startsWith("rubric"))!.auc > 0.9);
+    assert.match(formatEval(res), /ADVISORY, NEVER A VERDICT/);
+    assert.match(formatEval(res), /HOLD/, "a strong band result cannot ship a candidate the gate held");
+  });
+
+  it("stale features: an under-scored GATE pool warns loudly instead of passing off a false HOLD", () => {
+    const mkPool = (scoreAll: boolean) => {
+      const rows: LabeledRow[] = [];
+      const scores = new Map<string, number>();
+      for (let i = 0; i < 30; i++) {
+        rows.push(P(`p${i}`, { text: "same words", char_len: 5, created_at: "2024-01-01T00:00:00Z" }));
+        rows.push(N(`n${i}`, { text: "same words", char_len: 5, created_at: "2024-01-01T00:00:00Z" }));
+        if (scoreAll || i < 2) { scores.set(`p${i}`, 9); scores.set(`n${i}`, 1); } // else: unscored → sentinel
+      }
+      return runEval(rows, { sha: "rig0123456", scores });
+    };
+    const stale = mkPool(false);
+    assert.equal(stale.gateCoverage!.scored, 4, "only the 2 scored pairs made it into the gate pool");
+    assert.equal(stale.gateCoverage!.total, 60);
+    assert.match(formatEval(stale), /STALE FEATURES/);
+    assert.match(formatEval(stale), /NOT trustworthy/);
+
+    const fresh = mkPool(true);
+    assert.equal(fresh.gateCoverage!.scored, 60, "fully scored gate pool");
+    assert.doesNotMatch(formatEval(fresh), /STALE FEATURES/, "full coverage must not warn");
+  });
+
   it("tiny pool → INCONCLUSIVE and ships=false (below the floor, no verdict either way)", () => {
     const rows: LabeledRow[] = [];
     for (let i = 0; i < 5; i++) { rows.push(P(`p${i}`)); rows.push(N(`n${i}`)); } // 10 total < 40

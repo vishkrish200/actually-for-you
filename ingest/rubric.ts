@@ -131,7 +131,13 @@ function stripFences(raw: string): string {
 // edit re-scores because the sha changed). Quoted text is joined in when we captured the original.
 interface Candidate { tweet_id: string; text: string; quoted_text?: string }
 
-export function selectUnscored(db: DatabaseSync, sha: string, limit: number): Candidate[] {
+// reviewsOnly drops branch (b) — score the hand-signed pool and NOTHING else. That is what the eval
+// needs: an unscored gate-pool tweet ranks last on the -1 sentinel and blinds one of mix's three
+// inputs, so `npm run eval` self-heals via this mode (see the `preeval` script). It must not drag in
+// 500 candidate scorings the eval will never look at — those are the digest's job, on the daily run.
+export function selectUnscored(
+  db: DatabaseSync, sha: string, limit: number, reviewsOnly = false,
+): Candidate[] {
   // review-pool first, then newest candidates; a single UNION-ordered query keeps the priority and
   // the cap honest in one place. `pri` 0 = review pool, 1 = other — ORDER BY pri, then newest.
   const rows = db.prepare(`
@@ -141,12 +147,12 @@ export function selectUnscored(db: DatabaseSync, sha: string, limit: number): Ca
       FROM reviews r JOIN tweets t ON r.tweet_id = t.tweet_id
       WHERE t.text IS NOT NULL AND t.text != ''
         AND t.tweet_id NOT IN (SELECT tweet_id FROM scored)
-      UNION
+      ${reviewsOnly ? "" : `UNION
       SELECT t.tweet_id, t.text, t.quoted_id, 1 AS pri, COALESCE(t.captured_at, '') AS captured_at
       FROM tweets t
       WHERE t.text IS NOT NULL AND t.text != ''
         AND t.tweet_id NOT IN (SELECT tweet_id FROM scored)
-        AND t.tweet_id NOT IN (SELECT tweet_id FROM reviews)
+        AND t.tweet_id NOT IN (SELECT tweet_id FROM reviews)`}
     )
     SELECT tweet_id, text, quoted_id FROM ranked
     ORDER BY pri ASC, captured_at DESC, tweet_id DESC
@@ -306,6 +312,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
   const limitFlag = argv.indexOf("--limit");
   const limit = limitFlag >= 0 ? Math.max(0, parseInt(argv[limitFlag + 1] ?? "500", 10) || 0) : 500;
+  const reviewsOnly = argv.includes("--reviews-only");
 
   const rubricText = readFileSync(new URL("./RUBRIC.md", import.meta.url), "utf8");
   const sha = rubricSha(rubricText);
@@ -313,12 +320,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     `SELECT COUNT(*) n FROM rubric_scores WHERE rubric_sha = ?`,
   ).get(sha) as { n: number }).n;
 
-  const candidates = selectUnscored(db, sha, limit);
+  const candidates = selectUnscored(db, sha, limit, reviewsOnly);
   if (candidates.length === 0) {
     console.log(`[rubric] nothing to score for sha ${sha.slice(0, 8)}… (${covered} rows already covered). Done.`);
     return;
   }
-  console.log(`[rubric] scoring ${candidates.length} tweets (cap ${limit}) with ${MODEL}, rubric sha ${sha.slice(0, 8)}…`);
+  const scope = reviewsOnly ? "review pool only" : `cap ${limit}`;
+  console.log(`[rubric] scoring ${candidates.length} tweets (${scope}) with ${MODEL}, rubric sha ${sha.slice(0, 8)}…`);
 
   let summary: RunSummary;
   try {
