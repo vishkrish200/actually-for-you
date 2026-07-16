@@ -129,12 +129,12 @@ until it's significant".
 Three smaller instruments run alongside:
 
 - **Judge calibration** — every edit to `RUBRIC.md` is scored on whether the LLM's grades
-  moved closer to my votes (0.687 → 0.724 after personalizing it). Observe-only: tuning the
-  rubric against this table would make the judge grade itself.
+  moved closer to my votes (0.688 → 0.721 after personalizing it, now at full coverage).
+  Observe-only: tuning the rubric against this table would make the judge grade itself.
 - **Scorecard** — junk among the *judged* top-10 cards each day, with vote coverage printed
-  beside it (51.5% of 33 judged so far). An earlier version divided by all serves, so a day I
-  didn't vote read as 0% junk — quality "improving" because I stopped grading. Now a no-vote
-  day reads "no votes", never 0%.
+  beside it (37.9% of 58 judged so far, single-digit on recent days). An earlier version
+  divided by all serves, so a day I didn't vote read as 0% junk — quality "improving" because
+  I stopped grading. Now a no-vote day reads "no votes", never 0%.
 - **Recall probe** — tweets I organically liked that the digest never showed me first: the
   detector for what the system *misses*, not just what it mis-ranks.
 
