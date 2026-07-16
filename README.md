@@ -66,6 +66,10 @@ Two adjustments after the blend:
 Tweet length, media, and thread-ness are treated as **confounders**: regressed out during any
 training, never used as reward. A tweet can't earn rank for being long or having a picture.
 
+That fixed-weight blend is the incumbent, `mix`. It now has a **learned challenger**:
+`review-lr`, a logistic regression over a sentence embedding plus the same three signals,
+trained on my own votes — but only the ones that can never judge it again (the story below).
+
 ## How it grades itself
 
 Three layers, ground truth up: my hand votes are the only ground truth, an **offline gate**
@@ -84,22 +88,28 @@ I changed the metric, the credit formula, and the baseline policy while looking 
 votes, so no confidence interval on them accounts for my own choices. They print as an
 advisory regression read; only votes cast after the freeze can ever say SHIP.
 
+For weeks the honest reading was bleak: on the dev pool `mix` was statistically **tied** with
+`char_len` — sheer tweet length — and every learned model I tried was worse. Embeddings
+trained on my *engagement* read the gate at 0.43–0.45, below chance: on an already-ranked
+surface, dwell isn't taste. The fix wasn't a bigger model, it was better labels. The ~940
+pre-freeze votes were already **spent** as dev currency — I designed the metric while looking
+at them, so they can never verdict again — which makes them free to *train* on. `review-lr`
+trains on exactly those spent votes and is judged only on votes it has never seen:
+
 ```
-▼ REVIEW-DEV (all hand-signed 👍 vs 👎) — ADVISORY, NEVER A VERDICT  (290 👍 × 535 👎)
+▼ REVIEW-PROSPECTIVE (votes since the freeze) — NON-CIRCULAR SHIP GATE  (128 👍 × 132 👎)
 model                            AUC  Δ vs base CI
-char_len (strongest baseline) 0.6930
-keyword (lexicon)             0.6380  [-0.095, -0.014] *
-rubric (LLM judge)            0.7095  [-0.026, +0.057]     718/825 scored
-mix (M9 digest blend)         0.7090  [-0.019, +0.047]
+char_len (strongest baseline) 0.7243
+mix (M9 digest blend)         0.7554  [-0.016, +0.081]
+rubric (LLM judge)            0.7718  [-0.010, +0.108]
+review-lr (dev-trained)       0.7873  [+0.016, +0.114] *
 
-⏳ INCONCLUSIVE — only 0 post-cutoff labels. The prospective gate is accumulating;
-   pre-cutoff votes are dev-only and can never verdict.
+SHIP ✅ — beats the strongest baseline on post-freeze votes, CI excludes zero.
 ```
 
-Reading it honestly: on the dev pool, `mix` is statistically **tied** with `char_len` —
-ranking by sheer tweet length. That's why length is a confounder control, why the reference is
-the strongest baseline rather than the flattering one, and why the verdict now waits for votes
-the gate's design has never seen.
+The first SHIP the gate has ever printed — and the margin *widened* as votes accumulated
+(the CI's lower bound went 0.006 → 0.016 from n=213 to n=260), which is what a real effect
+does and a lucky artifact doesn't.
 
 **The live A/B** (`npm run interleave`) is the deciding vote. Every morning's digest is
 secretly drafted by two rankers taking turns, like picking teams — the UI is identical either
@@ -108,9 +118,13 @@ way, and nothing reveals which ranker picked which card. A ranker earns credit w
 
 The first three weeks were a **pilot** — the credit formula changed mid-flight, so its numbers
 tune the instrument, they don't rank the rankers. Final pilot read: TIED at n=83 judged events
-(keyword − mix CI [-0.096, 0.156]). The confirmatory window opened 2026-07-15 with everything
-frozen — matchup, credit formula, floor — and one rule against fooling myself: the CI prints
-**once**, at a predeclared 14-day horizon. No peeking, no "run until it's significant".
+(keyword − mix CI [-0.096, 0.156]). The confirmatory window opens 2026-07-16, re-frozen the
+day `review-lr` cleared the offline gate and took the challenger slot — **mix vs review-lr**,
+credit formula and floor unchanged, recorded before a single in-window serve. One rule against
+fooling myself: the CI prints **once**, at a predeclared 2-day horizon. The fast horizon is a
+declared trade — at that n the CI only separates large effects, so TIED means "no big effect",
+and a follow-up window must be predeclared fresh, never grown from a lean. No peeking, no "run
+until it's significant".
 
 Three smaller instruments run alongside:
 
@@ -143,11 +157,15 @@ Three smaller instruments run alongside:
 - ~800 votes accumulated while I changed the metric, the credit formula, and the baseline
   policy. "Never trained on" is not "never looked at" — those votes are a dev set now, and
   the verdict waits for votes cast after the freeze.
+- Engagement-trained embeddings scored 0.43–0.45 — *below* chance. The same embeddings cleared
+  the gate the day they were retrained on hand votes. The model was never the bottleneck; the
+  labels were. (And the spent dev votes were the only non-circular place to get them.)
 
 ## Deliberately out of scope
 
 **Multi-user/cloud** (one person's private surface) · **general recommender** (candidates only
-from my own timeline) · **bigger models** (each lost on a fair gate; the bottleneck is labels).
+from my own timeline) · **bigger models** (the one that finally cleared the gate is a logistic
+regression — the bottleneck was labels, not parameters).
 
 ## Stack
 
@@ -155,10 +173,10 @@ from my own timeline) · **bigger models** (each lost on a fair gate; the bottle
 |---|---|---|
 | Extension | esbuild + MV3, TypeScript | 4-line build; WXT removed once it earned nothing |
 | Ingest | Node + `node:sqlite` | **zero runtime deps** |
-| Ranking | Pure TypeScript | no ML framework |
+| Ranking | Pure TypeScript (`mix`) + a `uv` Python sidecar (`review-lr`: MiniLM + sklearn LR) | sidecar failure degrades to neutral, never blocks |
 | LLM judge | local `claude` CLI | no API key; degrades to neutral |
 | Evals | prospective AUC gate + fixed-horizon A/B | offline guardrail, online verdict; seeded, reproducible |
-| Tests | vitest + `node:test` | 45 + 113 green |
+| Tests | vitest + `node:test` | 45 + 123 green |
 | Scheduling | macOS launchd | survives reboot |
 
 ## Running it
@@ -169,14 +187,16 @@ cd extension && ./build.sh    # bakes the token; chrome://extensions → Load un
 npm test                      # either package · npm run eval = the ship gate
 ```
 
-8am delivery is a launchd plist running `npm run daily`. `CLAUDE_BIN` in `.env.local` points at
-the `claude` binary (optional — everything degrades without it).
+8am delivery is a launchd plist running `npm run daily`. `CLAUDE_BIN` and `UV_BIN` in
+`.env.local` point at the `claude` and `uv` binaries (both optional — the LLM judge and the
+`review-lr` sidecar each degrade to neutral without them).
 
 ## History
 
-Fourteen milestones: capture → ingest → read loop → labels → the learned-ranker HOLD → daily
+Fifteen milestones: capture → ingest → read loop → labels → the learned-ranker HOLD → daily
 delivery → poller → LLM rubric → mix → serve telemetry → interleaving → the eval rebuild →
-the prospective freeze. ~68k tweets, ~95k impressions, ~830 hand votes.
+the prospective freeze → the first SHIP (`review-lr`, trained on spent dev votes) and its
+live window vs `mix`. ~72k tweets, ~100k impressions, ~1,200 hand votes.
 [`PROGRESS.md`](./PROGRESS.md) · [`PRD.md`](./PRD.md) · [the blog post](./docs/blog-post.md).
 
 ## Inspirations
