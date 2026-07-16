@@ -7,8 +7,8 @@ scrolling. Those are different people, and X sides with the second one.
 
 So I built **actually-for-you** — my feed, re-ranked by my own behavior:
 
-- A Chrome extension quietly watches how I *actually* read: how long I linger on each tweet,
-  what I open, what I save.
+- A Chrome extension quietly watches how I *actually* read: how long I linger, what I open,
+  what I save.
 - A local pipeline turns that into a taste profile and re-ranks the same tweets.
 - Every morning at 8am, it texts me a digest.
 - Every digest secretly runs an A/B test between two rankers.
@@ -18,177 +18,143 @@ One user. No accounts, no cloud, no API keys. Nothing leaves my laptop.
 
 ![The morning digest — my feed, re-ranked, with Keep/Drop votes on every card](reader.png)
 
-The ranking math turned out to be the easy part. The two hard parts were **sensing behavior
-from a page that fights you**, and **building an eval I could trust** — including the day I
-discovered the eval itself was broken. That's the story.
+The ranking math turned out to be the easy part. The hard parts were **sensing behavior from
+a page that fights you** and **building an eval I could trust** — including the day the eval
+itself was the bug, and the day my own behavioral data turned out to point backwards. That's
+the story.
 
 ## Part 1 — a sensor for my own attention
 
 How long you look at a tweet isn't in any API or scrape. X measures it and keeps it. If I
-wanted my own attention data, I had to capture it live, in the browser, from a page that was
-never meant to be observed.
+wanted my own attention data, I had to capture it live, from a page that was never meant to be
+observed. Each way X fights you became a rule:
 
-X fights you in specific ways, and each one became a rule:
+- **Match GraphQL by operation name** — the numeric IDs rotate on every deploy.
+- **Anchor on `data-testid`, never CSS classes** — the classes are obfuscated and churn weekly.
+- **Track dwell by tweet ID, never DOM node** — X recycles nodes as you scroll; track the node
+  and you credit one tweet's reading time to whatever renders in its slot next.
+- **Watch state, not clicks** — log likes on click events and you miss every keyboard shortcut.
 
-- **Match GraphQL requests by operation name.** The numeric IDs rotate on every deploy, and
-  your capture dies silently.
-- **Anchor on `data-testid`, never CSS classes.** The class names are obfuscated and churn
-  weekly.
-- **Track dwell by tweet ID, never by DOM element.** X recycles the same handful of DOM nodes
-  as you scroll. Track the node and you credit one tweet's reading time to whatever renders in
-  its slot next.
-- **Watch state, not clicks.** Log likes on click events and you miss every keyboard shortcut.
-  Watch the like button's own state flip instead.
+And one architectural rule: content capture and behavior capture run in **separate failure
+boundaries**, so a change on X's side can never silently take down both.
 
-The one architectural rule: content capture and behavior capture run in **separate failure
-boundaries**. A change on X's side can break one; it must never silently take down both.
-
-### The bug that taught me how to debug this project
-
-One day, capture just stopped. The database count froze.
-
-Instead of staring at code, I added one piece of telemetry — *how long since the last write?* —
-and one log line. They showed something a code-read never would: the extension was faithfully
-re-sending the same batch every 15 seconds, and the server was throwing it away.
-
-The culprit was almost poetic. A health-check event — the thing that exists to make breakage
-loud — had a malformed field. It crashed inside the database transaction and rolled back the
-real data along with it. My diagnostic was killing the patient.
-
-That became the house rule: **when something breaks, don't guess from the code. Add the
-instrument that makes the invisible state visible, then look.** It ends up being the theme of
-everything below.
+The bug that set the project's debugging culture: capture just *stopped* one day. Instead of
+staring at code, I added one instrument — *how long since the last write?* — and one log line.
+They showed the extension faithfully re-sending the same batch every 15 seconds and the server
+throwing it away. The culprit: a malformed **health-check event** — the thing that exists to
+make breakage loud — was crashing inside the database transaction and rolling back the real
+data with it. My diagnostic was killing the patient. House rule ever since: **don't guess from
+code. Add the instrument that makes the invisible state visible, then look.**
 
 ## Part 2 — the eval that said "don't ship"
 
-With clean data flowing, I trained a small model to rank tweets, and I built a gate for it: an
-offline eval where the model had to beat a dumb keyword baseline on held-out data, or it
-doesn't ship.
+With clean data flowing, I trained a small model and built a gate: beat a dumb baseline on
+held-out data or don't ship. The first run said **SHIP ✅**. It was lying three ways: the
+"random" baseline scored a perfect 1.0 (tweet IDs encode time, and my positives and negatives
+came from different eras — anything touching the ID was secretly sorting by date); the test
+pool was 86% positive (ranking by *length* scored 1.0 too); and the keyword baseline had
+helped write its own answer key, since I'd curated training labels partly using those
+keywords.
 
-The first run said **SHIP ✅**. It was lying, three different ways:
+After fixing all three, the honest result: **my model lost.** I wrote `HOLD` in the log and
+shipped judges instead — a taste score (similarity to ~2,900 tweets I've liked), an LLM
+grading each tweet against a written rubric (text only — no author, no like counts, so quality
+can't proxy fame), and an author prior from my actual engagement history. Plus a permanent
+**explore lane**: 10% of every digest is tweets the ranker did *not* pick, my anti-filter-bubble
+valve and a vote-audit set no ranker had a hand in selecting.
 
-1. **The "random" baseline scored a perfect 1.0.** Impossible — unless something leaks the
-   answer. Tweet IDs encode time, and my positive and negative examples came from different
-   eras. Anything that touched the ID was secretly sorting by date.
-2. **The test pool was 86% positive.** With numbers that lopsided, every scorer looks perfect.
-   Ranking tweets by *length* scored 1.0 too. The metric couldn't fail.
-3. **The baseline was grading its own homework.** I had curated my training labels partly
-   *using* those same keywords. My model was being asked to beat the rule that wrote its
-   answer key.
+The HOLD bought the rules everything now runs on: my hand votes are the **only** ground truth;
+keyword and LLM scores may *rank* tweets but never *label* them; length and media are
+**confounds**, never features.
 
-After fixing all three, the honest result: **my model lost.** So I didn't ship it. I wrote
-`HOLD` in the log and moved on.
+## Part 3 — the day the eval became the suspect
 
-That decision bought the three rules the whole project now runs on:
+Then, week after week, every new ranker came back "statistically tied with keyword." Three
+different approaches, all mysteriously equal to a keyword counter? At some point the question
+flips: maybe the *ruler* is broken.
 
-- My hand votes are the **only** ground truth. Nothing else gets to label.
-- Keyword scores and LLM scores may *rank* tweets, but may never *label* them — that's
-  circular.
-- Tweet length and media are **confounds**, not features. A ranker never gets credit for
-  "longer tweet."
+It was. The old metric quietly discarded 20% of my votes, only really scored the top of the
+pile, and handed the keyword baseline a free pass on every comparison its coarse integer
+scores couldn't decide — **a quarter of all comparisons**, concentrated exactly where a taste
+ranker earns its keep. I rebuilt the gate around one plain question: **of every pair where I
+voted 👍 on one tweet and 👎 on the other, how often does the ranker put my 👍 on top?** Every
+vote counts, and a ranker clears only by beating the *strongest* dumb baseline by a margin the
+bootstrap says is real. Same votes, honest ruler — the rankers separated immediately.
 
-## Part 3 — what ships instead
+Mostly. Against the strongest baseline — usually sheer tweet length — my shipped blend still
+only *tied*. And there was a subtler problem: I had now changed the metric, the credit
+formula, and the baseline policy while staring at ~940 of my own votes. No confidence interval
+on those votes accounts for the designer's thumb on the scale. So I froze the design and
+declared them a **dev pool** — spent, allowed to advise, never again allowed to verdict. From
+that day, only votes the design had never seen could say SHIP.
 
-If a trained model can't win, use judges:
+## Part 4 — the data pointed backwards, and the spent votes bought a winner
 
-- **Taste** — how similar is this tweet to the ~2,900 tweets I've liked?
-- **Rubric** — an LLM grades each tweet 0–10 against a written description of what I want to
-  read. It sees only the text: no author, no like counts, so quality can't proxy fame.
-- **Author prior** — how often do I actually engage with this author?
+Here's the finding that reframed the project. I finally tried sentence embeddings — trained,
+carefully, on my *behavioral* labels (dwell, opens, engagements). They scored **0.43–0.45.
+Below chance.** Not useless — *inverted*. On a surface that's already ranked for engagement,
+"what I engaged with" measures the algorithm's pull on me, not my taste. The model was fine;
+the labels pointed backwards.
 
-Blend the three, and reserve 10% of every digest for an **explore lane**: tweets the ranker
-did *not* pick. That's the anti-filter-bubble valve, and my votes on those cards form a clean
-audit set no ranker had a hand in selecting.
-
-## Part 4 — the day the eval became the suspect
-
-Then something strange happened. Week after week, every new ranker — the LLM judge, the taste
-score, the blend — came back "statistically tied with keyword."
-
-Three different approaches, all mysteriously equal to a keyword counter? At some point the
-question flips: maybe the rankers aren't mediocre. Maybe the *ruler* is broken.
-
-It was. The old metric quietly threw away 20% of my votes for statistical hygiene, only really
-scored the top of the pile, and — worst — handed the keyword baseline a free pass on every
-comparison its coarse integer scores couldn't decide. That was **a quarter of all
-comparisons**, concentrated exactly where a taste ranker earns its keep: telling good AI
-content from AI-flavored junk, which all looks the same to a keyword counter.
-
-So I rebuilt the gate around one plain question: **out of every pair of tweets where I voted
-👍 on one and 👎 on the other, how often does the ranker put my 👍 on top?** That's it. Every
-vote counts, nothing is discarded, and a ranker only clears the gate if it beats keyword by a
-margin the bootstrap says is real.
-
-Same votes, honest ruler — the rankers separated immediately:
+The fix was hiding in the freeze. Those ~940 spent dev votes could never verdict again — which
+made them the one non-circular source of *training* labels that actually encode "I want this
+in my feed." So: `review-lr`, a logistic regression over a sentence embedding plus the same
+three judge signals, trained **only** on pre-freeze votes, judged **only** on post-freeze
+votes it has never seen. The train/test boundary is the freeze date itself.
 
 ```
-model                            AUC   vs keyword
-keyword (baseline to beat)    0.6282
-rubric (LLM judge)            0.6784
-mix (shipped blend)           0.6959   beats it — CI excludes zero  →  SHIP ✅
+▼ prospective gate — votes the design has never seen  (128 👍 × 132 👎)
+char_len (strongest baseline)  0.724
+mix (shipped blend)            0.755   CI includes zero — tied
+rubric (LLM judge)             0.772   CI includes zero — tied
+review-lr (vote-trained)       0.787   CI excludes zero  →  SHIP ✅
 ```
 
-The weeks of "tie" were the metric's fault. And the fix used the exact same move as the
-capture bug in Part 1: stop arguing with the number, instrument the instrument, then look.
-
-One more feedback loop fell out of this: every time I edit the rubric the LLM grades against,
-the eval reports whether the LLM's scores got *closer to my actual votes* or further away.
-Rewriting it from generic "is this high quality?" to my real taste moved agreement from 0.69
-to 0.72. (And a warning prints right in the report: never tune the rubric against this table —
-that would make the judge grade its own homework.)
+The first SHIP the gate has ever printed. And it strengthened as votes accumulated — the CI's
+lower bound tripled away from zero going from n=213 to n=260 — which is what a real effect
+does and a lucky artifact doesn't.
 
 ## Part 5 — the deciding vote is the product itself
 
-An offline eval can tell you a ranker isn't *worse*. It can't tell you which feed you'd rather
-live with. So the final verdict runs live, inside the product.
-
-Every morning's digest is secretly drafted by **two rankers taking turns**, like picking
-teams. The interface is pixel-identical either way; nothing on any card reveals which ranker
-picked it. Not even to me.
+An offline gate can say a ranker isn't worse. It can't say which feed I'd rather live with.
+So the final verdict runs live: every morning's digest is secretly drafted by **two rankers
+taking turns**, pixel-identical either way — nothing reveals which ranker picked which card,
+not even to me.
 
 ![A digest card — my Keep/Drop votes are the ground truth, and I can't see which ranker chose it](card.png)
 
-Each ranker earns credit when I open or 👍 its picks — and *loses* credit when I 👎 them,
-because a ranker that confidently serves junk should bleed for it. Right now the scoreboard
-says:
-
-```
-TIED at n=36 judged events — no ranker leads yet; keep serving.
-```
-
-An A/B report that says "keep serving" instead of inventing a winner is my favorite thing this
-project has produced.
-
-Two smaller instruments run daily alongside it: a **scorecard** (how much junk lands in the
-top 10 of each digest — 73% on day one, 0% the last three days) and a **recall probe** (what
-did I organically like that the digest never showed me first — the only detector for what the
-system *misses*).
+A ranker earns credit when I open or 👍 its picks and *loses* credit when I 👎 them — junk
+should bleed. The first weeks were a pilot (final read: TIED at n=83, which tuned the
+instrument, not the rankers). Now the confirmatory match is **mix vs review-lr**, with the
+anti-self-deception rules written down before the first serve: the scoreboard prints its
+confidence interval **once**, at a predeclared horizon — no peeking, no "run until it's
+significant" — and a TIED at that horizon means "no large effect", never "extend and hope."
 
 ## What I learned
 
-**In behavioral systems, the failure mode is never a crash. It's plausible wrong numbers.**
-Every real bug produced data that looked fine: green tests while every username came back
-empty, leaked timers crediting minutes of "attention" to tweets I flicked past, an LLM judge
-quietly grading only two-thirds of the pool. The defenses are boring and they work: freshness
-checks, coverage printed next to every score, diagnostics that can't take down what they
-monitor.
+**In behavioral systems, the failure mode is never a crash — it's plausible wrong numbers.**
+Every real bug produced data that looked fine: green tests with empty usernames, leaked timers
+crediting minutes of attention to tweets I flicked past, a judge quietly grading two-thirds of
+the pool. The defenses are boring and work: freshness checks, coverage printed beside every
+score, diagnostics that can't take down what they monitor.
 
 **Not shipping is a result.** The eval exists to protect you from your own motivated
 reasoning. When it fires, believe it.
 
-**Sometimes the eval is the bug.** The same suspicion you aim at a number that looks too good,
-you eventually have to aim at a number that looks too flat. The move is identical: trace,
-instrument, look.
+**Sometimes the eval is the bug.** The suspicion you aim at a number that looks too good, you
+eventually owe to a number that looks too flat. Same move either way: trace, instrument, look.
 
-**Capacity is rarely the bottleneck.** Today's champions are a similarity score and an LLM
-with a hand-written rubric. Bigger models wait until the eval — not my ego — says they're
-needed. At n=1, the bottleneck is labels.
+**The bottleneck was labels, not parameters.** My engagement data — the thing the whole
+capture pipeline existed to collect — pointed *away* from my taste, and the model that finally
+cleared the gate is a logistic regression. What changed wasn't capacity. It was asking 940
+hand votes to do the one job only they could do.
 
 ---
 
 _Code and full build log: [github.com/vishkrish200/actually-for-you](https://github.com/vishkrish200/actually-for-you).
-Chrome extension (MV3, TypeScript) → zero-dependency Node + SQLite server → pure-TS ranker →
-local `claude` CLI as the judge → launchd for the 8am text._
+Chrome extension (MV3, TypeScript) → zero-dependency Node + SQLite server → pure-TS ranker +
+a small Python sidecar for the vote-trained model → local `claude` CLI as the judge → launchd
+for the 8am text._
 
 _Inspired by [noscroll](https://x.com/noscroll) and
 [backscroll](https://sdan.io/projects/backscroll) — the two projects that planted the idea of
