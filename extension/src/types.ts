@@ -69,6 +69,9 @@ export interface CaptureHealthEvent {
   // "poll_tick" is emitted by the M7 background poller once per ~30-min alarm (detail carries the
   // action taken + tab id) — not a breakage signal but a liveness heartbeat: a silent poller is
   // undiagnosable, so every tick leaves a row in capture_health (PRD §5.8 "breakage must be loud").
-  kind: "graphql_schema_miss" | "selector_miss" | "hook_error" | "poll_tick";
+  // "poll_scroll" (M15) is one row per poller-tab scroll session (detail: stop reason + step
+  // count) — reason "no-times" means the <time> selector found nothing and is a breakage signal;
+  // "watermark"/"cap" are the expected outcomes, kept loud so a wedged catch-up is diagnosable.
+  kind: "graphql_schema_miss" | "selector_miss" | "hook_error" | "poll_tick" | "poll_scroll";
   detail: string;
 }

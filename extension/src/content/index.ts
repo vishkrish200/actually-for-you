@@ -6,7 +6,7 @@ import { openQueue, enqueue, drainQueue, deleteKeys } from "./idb-queue";
 import { type QueuedEvent } from "./queue-router";
 import { flushInChunks } from "./flush";
 import { DwellTracker } from "./dwell-tracker";
-import { tagTweets, shouldEmitImpression } from "./poll-source";
+import { tagTweets, shouldEmitImpression, decideScroll } from "./poll-source";
 import type { ImpressionEvent, CaptureHealthEvent, TweetRecord } from "../types";
 
 let sessionId = crypto.randomUUID();
@@ -14,7 +14,7 @@ let lastActivity = Date.now();
 const SESSION_IDLE_MS = 30 * 60 * 1000; // ponytail: tunable in M12
 
 // --- M7: am I the poller tab? ---
-// Every ~30 min the SW opens a short-lived, never-focused background x.com/home tab (closed ~2 min
+// Every ~30 min the SW opens a short-lived, never-focused background timeline tab (closed minutes
 // later — see background/index.ts) to widen the candidate corpus. If THIS is it, its tweets are candidates
 // ONLY (source:'poll') and it must mint NO impressions/dwell/engagement — the user never looked at
 // it, so any behavioral signal from it would be fabricated (CLAUDE.md: polled tweets never label).
@@ -28,9 +28,49 @@ const SESSION_IDLE_MS = 30 * 60 * 1000; // ponytail: tunable in M12
 let isPoller = false;
 try {
   chrome.runtime.sendMessage({ kind: "am_i_poller" }, res => {
-    if (!chrome.runtime.lastError && (res as { poller?: boolean } | undefined)?.poller) isPoller = true;
+    const r = res as { poller?: boolean; scrollUntil?: number } | undefined;
+    if (chrome.runtime.lastError || !r?.poller) return;
+    isPoller = true;
+    if (typeof r.scrollUntil === "number") autoscroll(r.scrollUntil);
   });
 } catch { /* context invalidated at load — stay organic; a reload re-asks */ }
+
+// --- M15: poller-tab watermark autoscroll ---
+// A catch-up poller loads the chronological follows search (see background CATCHUP_URL), so
+// scrolling until the rendered tail predates the last poll tick recovers the ENTIRE capture gap —
+// the overnight backlog lands in one tab-life instead of trickling out of For You over hours. The stop decision
+// is pure (decideScroll in poll-source.ts, unit-tested); this is just its DOM/timer plumbing.
+// Timestamps come from each tweet article's first <time datetime> — semantic element inside the
+// data-testid anchor (PRD §5: never CSS classes); first-in-DOM is the tweet's own header time,
+// ahead of any quoted-tweet time. One capture_health row per scroll session (kind "poll_scroll")
+// keeps the outcome diagnosable; reason "no-times" specifically means the selector went blind.
+function autoscroll(scrollUntilMs: number) {
+  let scrollsDone = 0;
+  let emptyStreak = 0;
+  let sawAny = false; // page has rendered at least one timestamp — until then, empty steps are
+  // "throttled background tab still loading" and never count toward no-times (dogfood 2026-07-18)
+  const timer = setInterval(() => {
+    // User grabbed the tab (it's disowned at close-skip, but that check runs later): the moment
+    // it's visible it is a person's tab — stop driving it, silently. Their scrolling captures.
+    if (document.visibilityState === "visible") { clearInterval(timer); return; }
+    window.scrollBy(0, window.innerHeight);
+    scrollsDone++;
+    const timesMs = [...document.querySelectorAll<HTMLElement>('article[data-testid="tweet"]')]
+      .map(a => Date.parse(a.querySelector("time")?.getAttribute("datetime") ?? ""))
+      .filter(t => !Number.isNaN(t));
+    const d = decideScroll(timesMs, scrollUntilMs, scrollsDone, emptyStreak, sawAny);
+    sawAny = sawAny || timesMs.length > 0;
+    if (d.kind === "continue") { emptyStreak = d.emptyStreak; return; }
+    clearInterval(timer);
+    emit({
+      __k: "health",
+      // sawAny disambiguates a "cap" stop: cap+sawAny:false = the timeline never rendered at all
+      // (page dead / selector wrong from step one), cap+sawAny:true = a genuinely deep backlog.
+      v: { ts: new Date().toISOString(), kind: "poll_scroll", detail: JSON.stringify({ reason: d.reason, scrollsDone, sawAny }) },
+    });
+  }, 2_500);
+  // The close alarm kills the tab regardless (pagehide flushes the queue) — no self-timeout needed.
+}
 
 // --- IndexedDB queue (durable; drained on tab-hide, keys deleted only after the server confirms) ---
 const queueReady = openQueue();
@@ -92,8 +132,9 @@ window.addEventListener("message", (e: MessageEvent) => {
   if (e.data.kind === "tweets") emit({ __k: "tweets", v: tagTweets(e.data.payload as TweetRecord[], isPoller) });
   if (e.data.kind === "capture_health") emit({ __k: "health", v: e.data.detail as CaptureHealthEvent });
   // Confirmed-positive labels harvested from the Likes/Bookmarks timeline. NOTE: the poller only
-  // ever loads x.com/home, never the Likes/Bookmarks timelines, so no "confirmed" message can
-  // originate from it — these stay genuine hand-endorsed positives regardless of isPoller.
+  // ever loads its timeline URL (the catch-up search or x.com/home), never the
+  // Likes/Bookmarks timelines, so no "confirmed" message can originate from it — these stay
+  // genuine hand-endorsed positives regardless of isPoller.
   if (e.data.kind === "confirmed") emit({ __k: "confirmed", v: { source: e.data.source, ids: e.data.ids } });
 });
 
