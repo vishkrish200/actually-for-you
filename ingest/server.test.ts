@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 
 process.env.AFY_DB = ":memory:";
 process.env.AFY_TOKEN = "test-token";
+process.env.AFY_PUBLIC_FEED_CACHE = ":memory:";
 
 const { db, server } = await import("./server.ts");
 
@@ -67,7 +68,23 @@ describe("public landing and remote read gate", () => {
     const response = await getRaw("/", remote);
     assert.equal(response.status, 200);
     assert.match(response.headers["content-type"] ?? "", /^text\/html/);
-    assert.match(response.body.toString("utf8"), /private deployment/);
+    assert.match(response.body.toString("utf8"), /public snapshot, private inputs/);
+    assert.match(response.body.toString("utf8"), /fetch\('\/public-feed\?v=1'\)/);
+  });
+
+  it("serves the exact public landing locally at /landing", async () => {
+    const response = await getRaw("/landing");
+    assert.equal(response.status, 200);
+    assert.match(response.body.toString("utf8"), /cached public digest preview/);
+  });
+
+  it("serves the public snapshot without minting digest experiment telemetry", async () => {
+    const response = await getRaw("/public-feed", remote);
+    assert.equal(response.status, 200);
+    assert.match(response.headers["content-type"] ?? "", /^application\/json/);
+    assert.deepEqual(JSON.parse(response.body.toString("utf8")).items, []);
+    assert.equal((db.prepare("SELECT COUNT(*) n FROM digest_log").get() as any).n, 0);
+    assert.equal((db.prepare("SELECT COUNT(*) n FROM digest_runs").get() as any).n, 0);
   });
 
   it("serves the public reader screenshot without unlocking private routes", async () => {

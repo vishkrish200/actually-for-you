@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node --env-file-if-exists=.env.local --experimental-strip-types server.ts",
-    "test": "node --experimental-strip-types --test server.test.ts m5m6.test.ts digest.test.ts rubric.test.ts funnel.test.ts interleave.test.ts scorecard.test.ts recall.test.ts",
+    "test": "node --experimental-strip-types --test server.test.ts m5m6.test.ts digest.test.ts rubric.test.ts funnel.test.ts interleave.test.ts scorecard.test.ts recall.test.ts public_feed.test.ts",
     "funnel": "node --experimental-strip-types funnel.ts",
     "interleave": "node --experimental-strip-types interleave.ts",
     "scorecard": "node --experimental-strip-types scorecard.ts",
