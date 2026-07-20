@@ -1,0 +1,121 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; box-sizing: border-box; }
+  body {
+    width: 1400px; height: 1260px; background: #0d0d10;
+    font-family: -apple-system, "SF Pro Display", "Helvetica Neue", sans-serif;
+    position: relative;
+  }
+  .box {
+    position: absolute; width: 480px; border-radius: 16px; border: 1.5px solid;
+    text-align: center; padding: 26px 20px;
+  }
+  .box h2 { font-size: 27px; font-weight: 700; color: #f2f2f4; }
+  .box p { font-size: 20px; margin-top: 8px; }
+  .gray  { background: #232327; border-color: #55555b; }
+  .gray p { color: #9a9aa2; }
+  .purple { background: #232034; border-color: #7b6fd4; }
+  .purple p { color: #a89ce6; }
+  .green { background: #152922; border-color: #3e9070; }
+  .green p { color: #6cc89c; }
+  .teal { background: #12262d; border-color: #3b8fa3; }
+  .teal p { color: #62b9cf; }
+  .arm {
+    width: 280px; height: 130px; padding: 0 14px;
+    display: flex; flex-direction: column; justify-content: center;
+  }
+  .arm h2 { font-size: 24px; }
+  .arm p { font-size: 16px; margin-top: 7px; }
+
+  .eval {
+    position: absolute; left: 880px; top: 470px; width: 440px;
+    border: 1.5px dashed #6a6a70; border-radius: 20px; padding: 28px 36px 34px;
+  }
+  .eval h2 { font-size: 27px; font-weight: 700; color: #f2f2f4; text-align: center; margin-bottom: 24px; }
+  .eval .row {
+    background: #2c2310; border: 1.5px solid #b8873a; border-radius: 12px;
+    color: #e5b35c; font-size: 21px; text-align: center;
+    padding: 15px 8px; margin-top: 14px;
+  }
+  svg.wires { position: absolute; inset: 0; }
+  .lbl { position: absolute; font-size: 21px; color: #8a8a92; }
+  .amber { color: #e0a83e; font-weight: 600; }
+  .footer { position: absolute; left: 145px; top: 1190px; font-size: 22px; color: #a0a0a8; }
+</style>
+
+<svg class="wires" width="1400" height="1260" viewBox="0 0 1400 1260">
+  <defs>
+    <marker id="a" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto">
+      <path d="M0,0 L8,4.5 L0,9" fill="none" stroke="#77777e" stroke-width="1.6"/>
+    </marker>
+    <marker id="am" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto">
+      <path d="M0,0 L8,4.5 L0,9" fill="none" stroke="#e0a83e" stroke-width="1.6"/>
+    </marker>
+  </defs>
+  <g stroke="#77777e" stroke-width="1.6" fill="none" marker-end="url(#a)">
+    <line x1="440" y1="190" x2="440" y2="252"/>
+    <line x1="440" y1="382" x2="440" y2="444"/>
+    <!-- ingest fans out to the two arms -->
+    <path d="M440,574 C440,602 270,600 270,630"/>
+    <path d="M440,574 C440,602 610,600 610,630"/>
+    <!-- arms converge into digest -->
+    <path d="M270,764 C270,796 440,794 440,822"/>
+    <path d="M610,764 C610,796 440,794 440,822"/>
+    <line x1="440" y1="954" x2="440" y2="1016"/>
+    <!-- votes: digest -> eval stack -->
+    <line x1="682" y1="889" x2="872" y2="889"/>
+  </g>
+  <!-- ship gate: eval -> arms, dashed amber -->
+  <path d="M872,699 L762,699" stroke="#e0a83e" stroke-width="1.6" fill="none"
+        stroke-dasharray="7 6" marker-end="url(#am)"/>
+</svg>
+
+<div class="box gray" style="left:200px; top:60px;">
+  <h2>x.com timeline</h2>
+  <p>scroll + 30-min poller tab<br>&gt;1h wake &rarr; catch-up scroll to watermark</p>
+</div>
+
+<div class="box purple" style="left:200px; top:254px;">
+  <h2>Chrome extension (MV3)</h2>
+  <p>GraphQL hook &middot; dwell machine</p>
+</div>
+
+<div class="box purple" style="left:200px; top:446px;">
+  <h2>Ingest server</h2>
+  <p>append-only SQLite events</p>
+</div>
+
+<div class="box green arm" style="left:130px; top:634px;">
+  <h2>Mix ranker</h2>
+  <p>0.5 taste &middot; 0.3 rubric &middot; 0.2 author</p>
+</div>
+
+<div class="box teal arm" style="left:470px; top:634px;">
+  <h2>review-lr</h2>
+  <p>LR on spent dev votes,<br>retrained daily</p>
+</div>
+
+<div class="box green" style="left:200px; top:826px;">
+  <h2>Daily digest</h2>
+  <p>blind two-arm team-draft + explore lane</p>
+</div>
+
+<div class="box gray" style="left:200px; top:1018px;">
+  <h2>8am iMessage</h2>
+</div>
+
+<div class="eval">
+  <h2>Eval stack</h2>
+  <div class="row">offline AUC gate</div>
+  <div class="row">interleave verdict</div>
+  <div class="row">judge calibration</div>
+  <div class="row">scorecard (junk@k)</div>
+  <div class="row">recall probe</div>
+  <div class="row">advisory cuts (&#10023; explore audit)</div>
+</div>
+
+<div class="lbl amber" style="left:772px; top:664px;">ship gate</div>
+<div class="lbl" style="left:730px; top:854px;">votes</div>
+
+<div class="footer">&#8635;&nbsp; what I read today becomes tomorrow's eval data</div>
