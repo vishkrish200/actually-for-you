@@ -5,6 +5,71 @@ Point new sessions at this file + the PRD for full context.
 
 ---
 
+## 2026-07-18 — first confirmatory interleave read: TIED (window CLOSED)
+
+**The one predeclared read was taken 2026-07-18 (day 2 horizon met, floor met). This window
+can never be read again — any follow-up is a FRESH predeclared freeze, never an extension.**
+
+- **Verdict verbatim: TIED at n=49 judged events** — (mix − review_lr) credit-rate CI
+  **[-0.077, +0.343] contains 0**. 134 arm-attributed serves (67/67). Point estimates:
+  mix 20 credits (rate 0.2985, 5 opens/18👍/3👎), review_lr 11 credits (rate 0.1642,
+  6 opens/11👍/6👎). Day wins mix 2–0 (1 tied day).
+- **Honest interpretation (per the 07-15 power note):** at a 2-day n the CI only separates
+  LARGE effects — this read means "no large difference detected", not "no effect". review-lr's
+  offline prospective SHIP did not translate into a detectable online win at this horizon;
+  the raw lean actually favored the mix incumbent, but the CI straddles 0 and a lean below
+  significance verdicts nothing.
+- Next matchup/horizon is an open product decision (longer window needs a new freeze; the
+  2-day horizon was the 07-15 user amendment trading power for speed).
+
+---
+
+## 2026-07-17 — M15: chronological List polling + wake catch-up (extension-only)
+
+**Spec: `notes/spec-m15-list-poll.md`; measurement that motivated it: `notes/gap-analysis.ts`**
+(25 days of afy.db: overnight posts recovered at ~80% of the alive-hour rate but median 4.1h
+after wake / 8.1h old — peak supply (22:00–01:00 IST) misses the morning digest read).
+
+- **PIVOTED 2026-07-18 (user rejected the List — manual creation/maintenance):** For You home
+  stays the PRIMARY target; steady-state ticks are byte-for-byte M7 with NO autoscroll (the
+  watermark stop rule assumes time order, which For You lacks). A tick waking from a **>1h gap**
+  (or the first-ever tick) opens `x.com/search?q=filter%3Afollows&f=live` — chronological
+  Latest search over the follow graph, user-verified on-account, account-relative so there is
+  NOTHING to configure (`AFY_POLL_LIST_ID` and its build.sh baking are removed) — and
+  autoscrolls to the watermark. Policy is pure (`catchupPlan`, poll-source.ts); `poll_tick`
+  health detail now carries `target: "home"|"catchup"`. Known ceiling: search excludes native
+  RTs; append `include:nativeretweets` once verified on-account.
+- **Watermark autoscroll:** poller tab scrolls one viewport per 2.5 s until the rendered tail
+  has 3 CONSECUTIVE tweets older than the last poll tick (consecutive-run guards against
+  retweets rendering the original's old timestamp), hard cap 40 scrolls, stop+`capture_health`
+  (`kind:"poll_scroll"`, reason `no-times`) if 3 straight steps render zero `<time>` elements.
+  Stop rule is pure (`decideScroll` in poll-source.ts); `lastPollTickTs` lives in
+  storage.LOCAL (survives restarts — it sizes the overnight gap), per-tab `scrollUntil` rides
+  the existing `am_i_poller` handshake. `TAB_LIFE_MIN` 2 → 4. Autoscroll aborts the moment the
+  tab becomes visible (user grabbed it). M7 invariants untouched: source:'poll' tagging and
+  impression-drop key off tab id, not URL; GraphQL hook already op-agnostic.
+- Extension tests 45 → **57** green (7 STOP-rule + 5 catch-up-policy). `npm run typecheck`
+  still fails on HEAD's pre-existing `quoted_id` gap in TweetRecord — not introduced here,
+  flagged separately.
+- **Dogfood day 1 (2026-07-18/19):** target routing verified LIVE across ~36h — every
+  wake-from-gap tick chose `catchup`, every steady tick `home`, closes at +4 min, 611 poll
+  tweets flowed, and `close-skipped-active`/defensive-close both fired in anger. One real bug
+  caught: all 8 catch-up scroll sessions died `no-times` at step 3 — a never-visible
+  background tab is render-throttled and X mounts long after 7.5 s, so the empty-streak
+  counted page-load as blindness. Fixed same day: pre-content empty steps never count toward
+  no-times (only SCROLL_CAP bounds the wait); `poll_scroll` detail now carries `sawAny` so a
+  cap-stop distinguishes "deep backlog" from "never rendered". Tests 57 → **58**. The
+  watermark deep-scroll itself is therefore NOT yet verified live — next natural overnight
+  catch-up is the test; look for `poll_scroll` reason `watermark`/`cap` with `sawAny:true`
+  and a burst of old-`created_at` poll tweets.
+- **LIVE once the extension is reloaded** (dist is built; zero config). Success read after
+  ~a week (`notes/gap-analysis.ts` from `ingest/`): dead-window posts captured within 2h of
+  wake 38% → **>80%**, median lag-past-wake 4.1h → **<0.5h** (age-at-capture won't move much
+  by definition — lag-past-wake is the controlled metric). `capture_health` poll_tick rows
+  now show `target:"catchup"` on wake ticks — a never-firing catch-up is visible.
+
+---
+
 ## 2026-07-15 — review-lr enters the interleave (window re-freeze, recorded BEFORE first in-window serve)
 
 **Matchup changed: `MATCHUP = ["mix","review_lr"]`, `WINDOW_START = 2026-07-16`.** The

@@ -154,7 +154,7 @@ Three smaller instruments run alongside:
 - The A/B keyed opens to a tweet's *first* drafting arm but votes to its *latest* — a
   cross-arm re-serve could put an arm's numerator on one ranker and its denominator on
   another. First-serve keying everywhere now; caught by an external review before it bit.
-- ~800 votes accumulated while I changed the metric, the credit formula, and the baseline
+- ~940 votes accumulated while I changed the metric, the credit formula, and the baseline
   policy. "Never trained on" is not "never looked at" — those votes are a dev set now, and
   the verdict waits for votes cast after the freeze.
 - Engagement-trained embeddings scored 0.43–0.45 — *below* chance. The same embeddings cleared
