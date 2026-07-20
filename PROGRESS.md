@@ -5,6 +5,30 @@ Point new sessions at this file + the PRD for full context.
 
 ---
 
+## 2026-07-21 — cached public digest SHIPPED
+
+- Replaced the landing page's static reader screenshot with an eight-card, internally scrollable
+  snapshot. Cards carry the stored post text, public media/quote context, and engagement counts;
+  every card opens its canonical x.com post. The embed now mirrors the real reader surface: sticky
+  48h/7d/archive/Review controls, pool-relative ✦ badges and ✧ explore, metric icons, and Keep/Drop.
+  Preview controls respond locally but never write; desktop and 390px mobile renders are verified.
+- `/public-feed` is a separate sanitized path, never a call to `/digest`: loading it leaves
+  `digest_log` and `digest_runs` byte-for-byte unchanged, so public traffic cannot become a serve
+  or contaminate the blinded interleave. Score, parts, lane, arm, author profile, dwell, reviews,
+  and write auth never enter the payload. Only the already-visible rank is mapped to a 60–99
+  display badge; the raw score remains private.
+- A main or quoted tweet is emitted only after X's logged-out oEmbed endpoint accepts it; this is
+  the guard against publishing protected-account content captured through the owner's session.
+  The last good result persists in gitignored `.public-feed-cache.json`, refreshes after 30 minutes,
+  and survives upstream verification failures without taking down the private reader.
+- Ingest tests **132 green** (new sanitizer/visibility/telemetry guards), `git diff --check` clean,
+  Playwright desktop/mobile snapshots clean with zero console warnings. Deployed through the
+  existing Cloudflare Tunnel by restarting `com.afy.ingest`; live verification: `/` 200 with the
+  cloned controls, `/public-feed` 200 with 8 cards (7 taste + 1 explore, zero private payload keys),
+  `/client` 401 without auth, and reviews/opens/serves/runs unchanged across the public requests.
+
+---
+
 ## 2026-07-18 — first confirmatory interleave read: TIED (window CLOSED)
 
 **The one predeclared read was taken 2026-07-18 (day 2 horizon met, floor met). This window
