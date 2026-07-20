@@ -347,22 +347,44 @@ function readBody(req: http.IncomingMessage): Promise<string> {
 }
 
 export const server = http.createServer(async (req, res) => {
+  const requestUrl = new URL(req.url ?? "/", "http://localhost");
+  const isRemote = Boolean(req.headers["cf-connecting-ip"]);
+
   // ---- remote read gate (Cloudflare Tunnel) ----
   // Local traffic (extension SW, launchd scripts) hits localhost directly and never carries
   // cf-connecting-ip; everything arriving through the tunnel does. Remote readers present
   // AFY_TOKEN once (?key=…); a year-long HttpOnly cookie unlocks after that. Personal data —
   // dwell, taste profile — must never be readable by whoever guesses the hostname.
   // ponytail: one shared secret + cookie; upgrade to Cloudflare Access if it ever leaks.
-  if (req.headers["cf-connecting-ip"] && TOKEN) {
-    const gurl = new URL(req.url ?? "/", "http://localhost");
-    if (gurl.searchParams.get("key") === TOKEN) {
+  if (isRemote && TOKEN) {
+    if (requestUrl.searchParams.get("key") === TOKEN) {
       res.writeHead(302, {
         "Set-Cookie": `afy=${TOKEN}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=31536000`,
-        "Location": gurl.pathname,
+        "Location": requestUrl.pathname === "/" ? "/client" : requestUrl.pathname,
       });
       res.end();
       return;
     }
+  }
+
+  // The deployment homepage is intentionally public, but only through the tunnel. Local `/`
+  // remains the private reader so the extension and machine-local workflows do not change.
+  if (isRemote && req.method === "GET" && requestUrl.pathname === "/") {
+    const html = fs.readFileSync(path.join(import.meta.dirname, "landing.html"), "utf8");
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=300" });
+    res.end(html);
+    return;
+  }
+
+  // This screenshot contains no feed history beyond the already-public project example.
+  if (req.method === "GET" && requestUrl.pathname === "/landing-reader.png") {
+    const image = fs.readFileSync(path.join(import.meta.dirname, "../docs/reader.png"));
+    res.writeHead(200, { "Content-Type": "image/png", "Cache-Control": "public, max-age=604800" });
+    res.end(image);
+    return;
+  }
+
+  if (isRemote && TOKEN) {
     const cookieOk = (req.headers.cookie ?? "").split(/;\s*/).includes(`afy=${TOKEN}`);
     if (!cookieOk && req.headers["x-afy-token"] !== TOKEN) {
       res.writeHead(401, { "Content-Type": "text/plain" });

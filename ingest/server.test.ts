@@ -5,6 +5,7 @@ import http from "node:http";
 import { readFileSync } from "node:fs";
 
 process.env.AFY_DB = ":memory:";
+process.env.AFY_TOKEN = "test-token";
 
 const { db, server } = await import("./server.ts");
 
@@ -14,7 +15,7 @@ function post(body: unknown): Promise<{ status: number; json: unknown }> {
   return new Promise((resolve, reject) => {
     const data = JSON.stringify(body);
     const req = http.request({ port: PORT, path: "/ingest", method: "POST",
-      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) }
+      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data), "x-afy-token": "test-token" }
     }, res => {
       let raw = "";
       res.on("data", c => { raw += c; });
@@ -42,6 +43,58 @@ const impression = {
   liked: false, rt: false, bookmarked: false, replied: false,
   media_present: false, is_thread: false, char_len: 5,
 };
+
+function getRaw(urlPath: string, headers: http.OutgoingHttpHeaders = {}): Promise<{
+  status: number;
+  headers: http.IncomingHttpHeaders;
+  body: Buffer;
+}> {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ port: PORT, path: urlPath, method: "GET", headers }, res => {
+      const chunks: Buffer[] = [];
+      res.on("data", chunk => chunks.push(Buffer.from(chunk)));
+      res.on("end", () => resolve({ status: res.statusCode!, headers: res.headers, body: Buffer.concat(chunks) }));
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+describe("public landing and remote read gate", () => {
+  const remote = { "cf-connecting-ip": "203.0.113.10" };
+
+  it("serves the landing page publicly through the tunnel", async () => {
+    const response = await getRaw("/", remote);
+    assert.equal(response.status, 200);
+    assert.match(response.headers["content-type"] ?? "", /^text\/html/);
+    assert.match(response.body.toString("utf8"), /private deployment/);
+  });
+
+  it("serves the public reader screenshot without unlocking private routes", async () => {
+    const image = await getRaw("/landing-reader.png", remote);
+    assert.equal(image.status, 200);
+    assert.equal(image.headers["content-type"], "image/png");
+    assert.equal(image.body.subarray(0, 4).toString("hex"), "89504e47");
+
+    const client = await getRaw("/client", remote);
+    assert.equal(client.status, 401);
+    assert.equal(client.body.toString("utf8"), "unauthorized");
+  });
+
+  it("turns the existing root key link into an authenticated client link", async () => {
+    const response = await getRaw("/?key=test-token", remote);
+    assert.equal(response.status, 302);
+    assert.equal(response.headers.location, "/client");
+    assert.match(response.headers["set-cookie"]?.[0] ?? "", /^afy=test-token;/);
+  });
+
+  it("keeps localhost root pointed at the private reader", async () => {
+    const response = await getRaw("/");
+    assert.equal(response.status, 200);
+    assert.match(response.body.toString("utf8"), /__AFY_TOKEN__|actually for you/i);
+    assert.doesNotMatch(response.body.toString("utf8"), /private deployment/);
+  });
+});
 
 describe("ingest server", () => {
   it("persists tweets and impressions", async () => {
@@ -249,7 +302,7 @@ function req(method: string, urlPath: string, body?: unknown): Promise<{ status:
   return new Promise((resolve, reject) => {
     const data = body === undefined ? "" : JSON.stringify(body);
     const r = http.request({ port: PORT, path: urlPath, method,
-      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) },
+      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data), "x-afy-token": "test-token" },
     }, res => {
       let raw = "";
       res.on("data", c => { raw += c; });

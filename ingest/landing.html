@@ -1,0 +1,441 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="actually-for-you is a private, single-user x feed re-ranker.">
+  <title>actually for you</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23131110'/%3E%3Cpath d='M8 16h16M16 8v16' stroke='%23d9a05b' stroke-width='2'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@1,6..72,500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #131110;
+      --surface: #1b1815;
+      --surface-2: #211d19;
+      --text: #ece7df;
+      --muted: #9b9083;
+      --faint: #6f655a;
+      --border: #302a24;
+      --accent: #d9a05b;
+      --measure: 1120px;
+      --ease: cubic-bezier(0.16, 1, 0.3, 1);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+      font-synthesis: none;
+      text-rendering: optimizeLegibility;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      background: var(--bg);
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      min-width: 320px;
+      background: var(--bg);
+      color: var(--text);
+      text-transform: lowercase;
+    }
+
+    body::before {
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      pointer-events: none;
+      content: "";
+      opacity: 0.08;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 160 160' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.78' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='.26'/%3E%3C/svg%3E");
+    }
+
+    a {
+      color: inherit;
+      text-decoration-color: var(--faint);
+      text-decoration-thickness: 1px;
+      text-underline-offset: 0.28em;
+      transition: color 180ms ease, text-decoration-color 180ms ease;
+    }
+
+    a:hover {
+      color: var(--accent);
+      text-decoration-color: var(--accent);
+    }
+
+    a:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 4px;
+    }
+
+    p,
+    h1,
+    h2,
+    ol,
+    figure {
+      margin: 0;
+    }
+
+    .shell {
+      width: min(var(--measure), calc(100vw - 48px));
+      margin: 0 auto;
+    }
+
+    .site-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 72px;
+      border-bottom: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .brand {
+      color: var(--text);
+      font-family: "Newsreader", Georgia, serif;
+      font-size: 21px;
+      font-style: italic;
+      text-decoration: none;
+    }
+
+    .brand span {
+      color: var(--accent);
+    }
+
+    .site-nav {
+      display: flex;
+      gap: 20px;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: 1.45fr 0.75fr;
+      gap: clamp(48px, 8vw, 120px);
+      align-items: end;
+      padding: 112px 0 88px;
+    }
+
+    .eyebrow,
+    .section-label {
+      color: var(--accent);
+      font-size: 12px;
+      letter-spacing: 0.055em;
+    }
+
+    .hero h1 {
+      max-width: 760px;
+      margin-top: 19px;
+      font-size: clamp(50px, 7.4vw, 94px);
+      font-weight: 440;
+      letter-spacing: -0.058em;
+      line-height: 0.94;
+      text-wrap: balance;
+    }
+
+    .hero-copy {
+      padding-bottom: 7px;
+    }
+
+    .hero-copy > p {
+      color: var(--muted);
+      font-size: 17px;
+      line-height: 1.58;
+      text-wrap: pretty;
+    }
+
+    .hero-copy > p + p {
+      margin-top: 17px;
+    }
+
+    .hero-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px 22px;
+      margin-top: 27px;
+      font-size: 14px;
+    }
+
+    .hero-links a::after,
+    .site-nav a::after {
+      margin-left: 0.35em;
+      color: var(--faint);
+      content: "↗";
+      font-size: 0.82em;
+    }
+
+    .private-note {
+      display: grid;
+      grid-template-columns: 145px minmax(0, 1fr);
+      gap: 28px;
+      padding: 20px 0;
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .private-note strong {
+      color: var(--text);
+      font-weight: 540;
+    }
+
+    .product-shot {
+      padding: 64px 0 110px;
+    }
+
+    .window {
+      overflow: hidden;
+      background: #100e0d;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+
+    .window-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 42px;
+      padding: 0 15px;
+      border-bottom: 1px solid var(--border);
+      color: var(--faint);
+      font-family: "SF Mono", Menlo, monospace;
+      font-size: 10px;
+      letter-spacing: 0.03em;
+    }
+
+    .window-dots {
+      display: flex;
+      gap: 6px;
+    }
+
+    .window-dots i {
+      width: 7px;
+      height: 7px;
+      background: #4b433a;
+      border-radius: 50%;
+    }
+
+    .window img {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+
+    .product-shot figcaption {
+      display: flex;
+      justify-content: space-between;
+      gap: 24px;
+      margin-top: 13px;
+      color: var(--faint);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .how {
+      display: grid;
+      grid-template-columns: 180px minmax(0, 1fr);
+      gap: 64px;
+      padding: 88px 0 120px;
+      border-top: 1px solid var(--border);
+    }
+
+    .steps {
+      list-style: none;
+      padding: 0;
+      counter-reset: step;
+    }
+
+    .steps li {
+      display: grid;
+      grid-template-columns: 42px 150px minmax(0, 1fr);
+      gap: 20px;
+      align-items: baseline;
+      padding: 24px 0;
+      border-top: 1px solid var(--border);
+      counter-increment: step;
+    }
+
+    .steps li:first-child {
+      padding-top: 0;
+      border-top: 0;
+    }
+
+    .steps li::before {
+      color: var(--faint);
+      content: counter(step, decimal-leading-zero);
+      font-family: "SF Mono", Menlo, monospace;
+      font-size: 11px;
+    }
+
+    .steps strong {
+      font-size: 17px;
+      font-weight: 500;
+    }
+
+    .steps span {
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.55;
+    }
+
+    footer {
+      display: flex;
+      justify-content: space-between;
+      gap: 28px;
+      padding: 26px 0 42px;
+      border-top: 1px solid var(--border);
+      color: var(--faint);
+      font-size: 12px;
+    }
+
+    @media (max-width: 760px) {
+      .shell {
+        width: min(var(--measure), calc(100vw - 28px));
+      }
+
+      .site-header {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 12px;
+        padding: 18px 0;
+      }
+
+      .hero {
+        grid-template-columns: 1fr;
+        gap: 36px;
+        padding: 74px 0 60px;
+      }
+
+      .hero h1 {
+        font-size: clamp(48px, 15vw, 66px);
+      }
+
+      .private-note {
+        grid-template-columns: 1fr;
+        gap: 8px;
+      }
+
+      .product-shot {
+        padding: 42px 0 80px;
+      }
+
+      .window-bar {
+        min-height: 36px;
+      }
+
+      .product-shot figcaption {
+        flex-direction: column;
+        gap: 3px;
+      }
+
+      .how {
+        grid-template-columns: 1fr;
+        gap: 36px;
+        padding: 68px 0 88px;
+      }
+
+      .steps li {
+        grid-template-columns: 28px minmax(0, 1fr);
+        gap: 10px 14px;
+      }
+
+      .steps span {
+        grid-column: 2;
+      }
+
+      footer {
+        flex-direction: column;
+        gap: 8px;
+      }
+    }
+
+    @media (prefers-reduced-motion: no-preference) {
+      .hero,
+      .private-note,
+      .product-shot,
+      .how {
+        animation: enter 700ms var(--ease) both;
+      }
+
+      .private-note { animation-delay: 80ms; }
+      .product-shot { animation-delay: 130ms; }
+      .how { animation-delay: 180ms; }
+
+      @keyframes enter {
+        from { opacity: 0; transform: translateY(10px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="site-header shell">
+    <a class="brand" href="#top" aria-label="actually for you home">actually <span>for you</span></a>
+    <nav class="site-nav" aria-label="project links">
+      <a href="https://github.com/vishkrish200/actually-for-you">github</a>
+      <a href="https://vishnu.one/writing/actually-for-you">build notes</a>
+    </nav>
+  </header>
+
+  <main id="top">
+    <section class="hero shell" aria-labelledby="hero-title">
+      <div>
+        <p class="eyebrow">single-user feed experiment</p>
+        <h1 id="hero-title">my x feed, ranked around what i actually want to read.</h1>
+      </div>
+      <div class="hero-copy">
+        <p>actually-for-you captures my own reading signals, re-ranks the same posts locally, and sends me a smaller morning digest.</p>
+        <p>the reader is private because it contains my browsing and voting history. the code, design decisions, and evaluation results are public.</p>
+        <div class="hero-links">
+          <a href="https://github.com/vishkrish200/actually-for-you">view github</a>
+          <a href="https://vishnu.one/writing/actually-for-you">read how it works</a>
+        </div>
+      </div>
+    </section>
+
+    <aside class="private-note shell" aria-label="access note">
+      <strong>private deployment</strong>
+      <span>there is no signup or public demo. this instance has one user and stays locked because the feed is personal data.</span>
+    </aside>
+
+    <figure class="product-shot shell">
+      <div class="window">
+        <div class="window-bar">
+          <span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span>twitter.vishnu.one / private reader</span>
+          <span aria-hidden="true">private</span>
+        </div>
+        <img src="/landing-reader.png" alt="the actually-for-you private morning digest with ranked tweet cards and keep or drop controls">
+      </div>
+      <figcaption>
+        <span>the morning reader, ranked locally</span>
+        <span>keep and drop votes become the evaluation set</span>
+      </figcaption>
+    </figure>
+
+    <section class="how shell" aria-labelledby="how-title">
+      <div>
+        <p class="section-label">how it works</p>
+        <h2 id="how-title" hidden>how actually-for-you works</h2>
+      </div>
+      <ol class="steps">
+        <li><strong>capture</strong><span>a chrome extension records the posts i see and a small set of reading signals.</span></li>
+        <li><strong>rank</strong><span>a local node and sqlite service scores candidates without sending my history to a hosted database.</span></li>
+        <li><strong>review</strong><span>every digest card has keep and drop controls. those hand votes are the only gold labels.</span></li>
+        <li><strong>test</strong><span>new rankers must clear an offline gate, then earn their result in a blinded live comparison.</span></li>
+      </ol>
+    </section>
+  </main>
+
+  <footer class="shell">
+    <span>built for one person, documented in public</span>
+    <span>no accounts · no hosted feed data</span>
+  </footer>
+</body>
+</html>
