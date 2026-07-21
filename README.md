@@ -129,13 +129,6 @@ declared trade — at that n the CI only separates large effects, so TIED means 
 and a follow-up window must be predeclared fresh, never grown from a lean. No peeking, no "run
 until it's significant".
 
-That window closed 2026-07-18 with its one read: **TIED at n=49 judged events** (mix −
-review-lr CI [-0.077, +0.343]). I barely used the digest inside the two days, so the sample
-stayed small; the raw lean favored the incumbent `mix`, but a lean below significance verdicts
-nothing. The offline SHIP did not translate into a detectable online win — reported as-is,
-because a scoreboard you can ship around isn't a scoreboard. Any rematch is a fresh
-predeclared window.
-
 Three smaller instruments run alongside:
 
 - **Judge calibration** — every edit to `RUBRIC.md` is scored on whether the LLM's grades
