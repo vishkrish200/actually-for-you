@@ -125,18 +125,10 @@ not even to me.
 
 A ranker earns credit when I open or 👍 its picks and *loses* credit when I 👎 them — junk
 should bleed. The first weeks were a pilot (final read: TIED at n=83, which tuned the
-instrument, not the rankers). The confirmatory match was **mix vs review-lr**, with the
+instrument, not the rankers). Now the confirmatory match is **mix vs review-lr**, with the
 anti-self-deception rules written down before the first serve: the scoreboard prints its
 confidence interval **once**, at a predeclared horizon — no peeking, no "run until it's
 significant" — and a TIED at that horizon means "no large effect", never "extend and hope."
-
-That window has now had its one read. At the predeclared two-day horizon: **TIED at n=49
-judged events** (mix − review-lr CI [−0.077, +0.343]). The honest gloss: I barely used the
-digest those two days, so the sample stayed small, and at that n the CI only separates large
-effects — the raw lean actually favored the incumbent blend. The offline SHIP did not
-translate into a detectable online win. Window closed; a rematch has to be a fresh predeclared
-freeze, never an extension of a lean. Which is the system doing its job: the gate that finally
-said SHIP is the same machinery that now refuses to call a winner on 49 events.
 
 ## What I learned
 
