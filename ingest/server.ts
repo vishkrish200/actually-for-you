@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { buildDigest, candidateCount, attachQuoted, parseMedia, isReply, buildAuthorPrior, REPLY_MIN_AUTHOR_LIKES } from "./digest.ts";
+import { buildPublicFeedSnapshot, type PublicFeedSnapshot } from "./public_feed.ts";
 
 const PORT = 2727;
 const DB_PATH = process.env.AFY_DB ?? "afy.db";
@@ -346,23 +347,120 @@ function readBody(req: http.IncomingMessage): Promise<string> {
   return new Promise(resolve => { let s = ""; req.on("data", c => s += c); req.on("end", () => resolve(s)); });
 }
 
+// ---- read-only public snapshot ----
+// The public landing must never call /digest: that route records serves for the private product's
+// blinded interleave. Instead, one sanitized snapshot is persisted locally and shared by every
+// visitor. A stale cache is served immediately while a single background refresh re-validates each
+// tweet as publicly embeddable; the cache file is personal deployment state and stays gitignored.
+const PUBLIC_FEED_CACHE_PATH = process.env.AFY_PUBLIC_FEED_CACHE === ":memory:"
+  ? null
+  : process.env.AFY_PUBLIC_FEED_CACHE ?? path.join(import.meta.dirname, ".public-feed-cache.json");
+const requestedPublicFeedTtl = Number(process.env.AFY_PUBLIC_FEED_TTL_MS ?? 30 * 60_000);
+const PUBLIC_FEED_TTL_MS = Number.isFinite(requestedPublicFeedTtl)
+  ? Math.max(60_000, requestedPublicFeedTtl)
+  : 30 * 60_000;
+
+function loadPublicFeedCache(): PublicFeedSnapshot | null {
+  if (!PUBLIC_FEED_CACHE_PATH) return null;
+  try {
+    const value = JSON.parse(fs.readFileSync(PUBLIC_FEED_CACHE_PATH, "utf8")) as PublicFeedSnapshot;
+    if (!value || value.version !== 1 || typeof value.generated_at !== "string" || !Number.isFinite(Date.parse(value.generated_at)) || !Array.isArray(value.items)) return null;
+    return value;
+  } catch {
+    return null;
+  }
+}
+
+let publicFeedCache = loadPublicFeedCache();
+let publicFeedRefresh: Promise<PublicFeedSnapshot> | null = null;
+
+function refreshPublicFeed(): Promise<PublicFeedSnapshot> {
+  if (publicFeedRefresh) return publicFeedRefresh;
+  publicFeedRefresh = buildPublicFeedSnapshot(db).then(next => {
+    // An upstream oEmbed outage looks like zero public tweets. Keep a known-good non-empty cache
+    // instead of replacing the demo with an outage-shaped empty state.
+    if (next.items.length === 0 && (publicFeedCache?.items.length ?? 0) > 0) {
+      throw new Error("public verification returned zero items; keeping prior snapshot");
+    }
+    publicFeedCache = next;
+    if (PUBLIC_FEED_CACHE_PATH) {
+      const temp = `${PUBLIC_FEED_CACHE_PATH}.tmp`;
+      fs.writeFileSync(temp, JSON.stringify(next));
+      fs.renameSync(temp, PUBLIC_FEED_CACHE_PATH);
+    }
+    return next;
+  }).finally(() => { publicFeedRefresh = null; });
+  return publicFeedRefresh;
+}
+
+async function getPublicFeed(): Promise<PublicFeedSnapshot> {
+  const age = publicFeedCache ? Date.now() - Date.parse(publicFeedCache.generated_at) : Infinity;
+  if (publicFeedCache) {
+    if (age >= PUBLIC_FEED_TTL_MS && !publicFeedRefresh) {
+      refreshPublicFeed().catch(error => console.error("[afy-public] snapshot refresh failed:", error));
+    }
+    return publicFeedCache;
+  }
+  return refreshPublicFeed();
+}
+
 export const server = http.createServer(async (req, res) => {
+  const requestUrl = new URL(req.url ?? "/", "http://localhost");
+  const isRemote = Boolean(req.headers["cf-connecting-ip"]);
+
   // ---- remote read gate (Cloudflare Tunnel) ----
   // Local traffic (extension SW, launchd scripts) hits localhost directly and never carries
   // cf-connecting-ip; everything arriving through the tunnel does. Remote readers present
   // AFY_TOKEN once (?key=…); a year-long HttpOnly cookie unlocks after that. Personal data —
   // dwell, taste profile — must never be readable by whoever guesses the hostname.
   // ponytail: one shared secret + cookie; upgrade to Cloudflare Access if it ever leaks.
-  if (req.headers["cf-connecting-ip"] && TOKEN) {
-    const gurl = new URL(req.url ?? "/", "http://localhost");
-    if (gurl.searchParams.get("key") === TOKEN) {
+  if (isRemote && TOKEN) {
+    if (requestUrl.searchParams.get("key") === TOKEN) {
       res.writeHead(302, {
         "Set-Cookie": `afy=${TOKEN}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=31536000`,
-        "Location": gurl.pathname,
+        "Location": requestUrl.pathname === "/" ? "/client" : requestUrl.pathname,
       });
       res.end();
       return;
     }
+  }
+
+  // The deployment homepage is intentionally public, but only through the tunnel. Local `/`
+  // remains the private reader so the extension and machine-local workflows do not change.
+  if (req.method === "GET" && ((isRemote && requestUrl.pathname === "/") || (!isRemote && requestUrl.pathname === "/landing"))) {
+    const html = fs.readFileSync(path.join(import.meta.dirname, "landing.html"), "utf8");
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=300" });
+    res.end(html);
+    return;
+  }
+
+  // This screenshot contains no feed history beyond the already-public project example.
+  if (req.method === "GET" && requestUrl.pathname === "/landing-reader.png") {
+    const image = fs.readFileSync(path.join(import.meta.dirname, "../docs/reader.png"));
+    res.writeHead(200, { "Content-Type": "image/png", "Cache-Control": "public, max-age=604800" });
+    res.end(image);
+    return;
+  }
+
+  // Public through the tunnel and available at localhost for an exact preview. This endpoint only
+  // reads a sanitized cache; it exposes no auth token and performs no experiment telemetry writes.
+  if (req.method === "GET" && requestUrl.pathname === "/public-feed") {
+    try {
+      const snapshot = await getPublicFeed();
+      res.writeHead(200, {
+        "Content-Type": "application/json; charset=utf-8",
+        "Cache-Control": "public, max-age=60, stale-while-revalidate=1800",
+      });
+      res.end(JSON.stringify(snapshot));
+    } catch (error) {
+      console.error("[afy-public] snapshot unavailable:", error);
+      res.writeHead(503, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+      res.end(JSON.stringify({ error: "snapshot unavailable" }));
+    }
+    return;
+  }
+
+  if (isRemote && TOKEN) {
     const cookieOk = (req.headers.cookie ?? "").split(/;\s*/).includes(`afy=${TOKEN}`);
     if (!cookieOk && req.headers["x-afy-token"] !== TOKEN) {
       res.writeHead(401, { "Content-Type": "text/plain" });

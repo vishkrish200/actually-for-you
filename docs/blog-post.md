@@ -90,11 +90,11 @@ that day, only votes the design had never seen could say SHIP.
 
 ## Part 4 — the data pointed backwards, and the spent votes bought a winner
 
-Here's the finding that reframed the project. I finally tried sentence embeddings — trained,
-carefully, on my *behavioral* labels (dwell, opens, engagements). They scored **0.43–0.45.
-Below chance.** Not useless — *inverted*. On a surface that's already ranked for engagement,
-"what I engaged with" measures the algorithm's pull on me, not my taste. The model was fine;
-the labels pointed backwards.
+Here's the finding that reframed the project. Everything I trained on my *behavioral* labels —
+a ranker over harvested likes, probes on dwell and detail-opens — read **~0.44 against my hand
+votes, when chance read ~0.49. Below chance.** Not useless — *inverted*. On a surface that's
+already ranked for engagement, "what I engaged with" measures the algorithm's pull on me, not
+my taste. The models were fine; the labels pointed backwards.
 
 The fix was hiding in the freeze. Those ~940 spent dev votes could never verdict again — which
 made them the one non-circular source of *training* labels that actually encode "I want this
@@ -103,7 +103,7 @@ three judge signals, trained **only** on pre-freeze votes, judged **only** on po
 votes it has never seen. The train/test boundary is the freeze date itself.
 
 ```
-▼ prospective gate — votes the design has never seen  (128 👍 × 132 👎)
+▼ prospective gate — pairwise AUC on votes the design has never seen  (128 👍 × 132 👎)
 char_len (strongest baseline)  0.724
 mix (shipped blend)            0.755   CI includes zero — tied
 rubric (LLM judge)             0.772   CI includes zero — tied
@@ -111,8 +111,8 @@ review-lr (vote-trained)       0.787   CI excludes zero  →  SHIP ✅
 ```
 
 The first SHIP the gate has ever printed. And it strengthened as votes accumulated — the CI's
-lower bound tripled away from zero going from n=213 to n=260 — which is what a real effect
-does and a lucky artifact doesn't.
+lower bound moved from +0.006 to +0.016 going from n=213 to n=260 — which is what a real
+effect does and a lucky artifact doesn't.
 
 ## Part 5 — the deciding vote is the product itself
 
@@ -125,10 +125,18 @@ not even to me.
 
 A ranker earns credit when I open or 👍 its picks and *loses* credit when I 👎 them — junk
 should bleed. The first weeks were a pilot (final read: TIED at n=83, which tuned the
-instrument, not the rankers). Now the confirmatory match is **mix vs review-lr**, with the
+instrument, not the rankers). The confirmatory match was **mix vs review-lr**, with the
 anti-self-deception rules written down before the first serve: the scoreboard prints its
 confidence interval **once**, at a predeclared horizon — no peeking, no "run until it's
 significant" — and a TIED at that horizon means "no large effect", never "extend and hope."
+
+That window has now had its one read. At the predeclared two-day horizon: **TIED at n=49
+judged events** (mix − review-lr CI [−0.077, +0.343]). The honest gloss: I barely used the
+digest those two days, so the sample stayed small, and at that n the CI only separates large
+effects — the raw lean actually favored the incumbent blend. The offline SHIP did not
+translate into a detectable online win. Window closed; a rematch has to be a fresh predeclared
+freeze, never an extension of a lean. Which is the system doing its job: the gate that finally
+said SHIP is the same machinery that now refuses to call a winner on 49 events.
 
 ## What I learned
 
@@ -156,6 +164,12 @@ Chrome extension (MV3, TypeScript) → zero-dependency Node + SQLite server → 
 a small Python sidecar for the vote-trained model → local `claude` CLI as the judge → launchd
 for the 8am text._
 
-_Inspired by [noscroll](https://x.com/noscroll) and
-[backscroll](https://sdan.io/projects/backscroll) — the two projects that planted the idea of
-taking your own feed back._
+_This project stands on two others. [noscroll](https://noscroll.com) planted the idea that a
+feed should answer to its reader, not its host. [backscroll](https://sdan.io/projects/backscroll)
+— Surya Dantuluri's personal timeline digest — showed the shape I wanted: pull your own
+timeline, grade it with an LLM against a personal rubric, read a ranked digest instead of
+scrolling. My LLM judge in Part 2 is a direct descendant of backscroll's `qualityWeight`.
+Where this project tries to go further is the part backscroll's writeup names as its open
+problem — "the eval setup isn't there" — so the eval became the centerpiece: a behavioral
+sensor for the attention data X never exposes, hand votes as the only ground truth, a
+prospective gate, and a blinded interleave with the verdict rules written down in advance._

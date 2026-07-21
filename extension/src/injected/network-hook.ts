@@ -279,6 +279,7 @@ interface TweetRecord {
   };
   text: string;
   media: { type: "photo" | "video" | "gif" | "card" | "article"; url: string; video?: string; title?: string; preview?: string; domain?: string; link?: string }[];
+  quoted_id?: string;
   is_thread: boolean;
   created_at: string;
   metrics: { likes: number; rts: number; replies: number; views?: number };
