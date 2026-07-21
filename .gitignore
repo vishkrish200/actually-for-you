@@ -20,6 +20,10 @@ ingest/.public-feed-cache.json.tmp
 # local-only
 ducky-cli/
 .claude/
+.playwright-cli/
+output/
+# working draft with unresolved [FILL] notes — the published post is docs/blog-post.md
+notes/blog/
 .omx/
 # auto-generated CLAUDE.md mirror (its find-replace garbles the rubric-scorer facts — do not publish)
 AGENTS.md

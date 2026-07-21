@@ -5,7 +5,7 @@ Point new sessions at this file + the PRD for full context.
 
 ---
 
-## 2026-07-21 — cached public digest SHIPPED
+## ▶ RESUME HERE (2026-07-21) — cached public digest SHIPPED
 
 - Replaced the landing page's static reader screenshot with an eight-card, internally scrollable
   snapshot. Cards carry the stored post text, public media/quote context, and engagement counts;
@@ -135,7 +135,7 @@ read** — no peeking occurred; a matchup change is not optional stopping. Credi
 
 ---
 
-## ▶ RESUME HERE (2026-07-14)
+## 2026-07-14 — M14 prospective freeze
 
 **M14 prospective freeze SHIPPED: the eval stack stopped grading its own homework.** Triggered
 by an external methodology review (all six of its checkable findings verified against the code).

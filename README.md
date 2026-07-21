@@ -11,6 +11,9 @@ leaves my machine.
 _Every card: a **✦ score** (taste + LLM rubric + author prior) and 👍/👎 votes that become the
 eval's gold labels. Two rankers are secretly interleaved in every slate._
 
+**Live:** a sanitized snapshot of today's digest is public at
+[twitter.vishnu.one](https://twitter.vishnu.one) · [the build-notes post](https://vishnu.one/writing/actually-for-you)
+
 ## Why
 
 X ranks for time-on-site. I want the feed ranked by what I actually read thoughtfully — with a
@@ -89,9 +92,9 @@ votes, so no confidence interval on them accounts for my own choices. They print
 advisory regression read; only votes cast after the freeze can ever say SHIP.
 
 For weeks the honest reading was bleak: on the dev pool `mix` was statistically **tied** with
-`char_len` — sheer tweet length — and every learned model I tried was worse. Embeddings
-trained on my *engagement* read the gate at 0.43–0.45, below chance: on an already-ranked
-surface, dwell isn't taste. The fix wasn't a bigger model, it was better labels. The ~940
+`char_len` — sheer tweet length — and every learned model I tried was worse. Models trained
+on my *engagement* (harvested likes, dwell) read ~0.44 against my hand votes when chance read
+~0.49 — below chance: on an already-ranked surface, dwell isn't taste. The fix wasn't a bigger model, it was better labels. The ~940
 pre-freeze votes were already **spent** as dev currency — I designed the metric while looking
 at them, so they can never verdict again — which makes them free to *train* on. `review-lr`
 trains on exactly those spent votes and is judged only on votes it has never seen:
@@ -126,6 +129,13 @@ declared trade — at that n the CI only separates large effects, so TIED means 
 and a follow-up window must be predeclared fresh, never grown from a lean. No peeking, no "run
 until it's significant".
 
+That window closed 2026-07-18 with its one read: **TIED at n=49 judged events** (mix −
+review-lr CI [-0.077, +0.343]). I barely used the digest inside the two days, so the sample
+stayed small; the raw lean favored the incumbent `mix`, but a lean below significance verdicts
+nothing. The offline SHIP did not translate into a detectable online win — reported as-is,
+because a scoreboard you can ship around isn't a scoreboard. Any rematch is a fresh
+predeclared window.
+
 Three smaller instruments run alongside:
 
 - **Judge calibration** — every edit to `RUBRIC.md` is scored on whether the LLM's grades
@@ -157,9 +167,10 @@ Three smaller instruments run alongside:
 - ~940 votes accumulated while I changed the metric, the credit formula, and the baseline
   policy. "Never trained on" is not "never looked at" — those votes are a dev set now, and
   the verdict waits for votes cast after the freeze.
-- Engagement-trained embeddings scored 0.43–0.45 — *below* chance. The same embeddings cleared
-  the gate the day they were retrained on hand votes. The model was never the bottleneck; the
-  labels were. (And the spent dev votes were the only non-circular place to get them.)
+- Engagement-trained models scored ~0.44 against my hand votes — *below* chance. An
+  embedding-based model cleared the gate the day it was trained on hand votes instead. The
+  model was never the bottleneck; the labels were. (And the spent dev votes were the only
+  non-circular place to get them.)
 
 ## Deliberately out of scope
 
@@ -176,7 +187,7 @@ regression — the bottleneck was labels, not parameters).
 | Ranking | Pure TypeScript (`mix`) + a `uv` Python sidecar (`review-lr`: MiniLM + sklearn LR) | sidecar failure degrades to neutral, never blocks |
 | LLM judge | local `claude` CLI | no API key; degrades to neutral |
 | Evals | prospective AUC gate + fixed-horizon A/B | offline guardrail, online verdict; seeded, reproducible |
-| Tests | vitest + `node:test` | 45 + 123 green |
+| Tests | vitest + `node:test` | 58 + 132 green |
 | Scheduling | macOS launchd | survives reboot |
 
 ## Running it
@@ -201,5 +212,7 @@ live window vs `mix`. ~72k tweets, ~100k impressions, ~1,200 hand votes.
 
 ## Inspirations
 
-[noscroll](https://x.com/noscroll) and [backscroll](https://sdan.io/projects/backscroll) — the
-two projects that seeded the idea of taking your own feed back.
+[noscroll](https://noscroll.com) and [backscroll](https://sdan.io/projects/backscroll) — the
+two projects that seeded the idea of taking your own feed back. The LLM rubric judge is a
+direct descendant of backscroll's `qualityWeight`; the eval stack aims at the problem its
+writeup left open ("the eval setup isn't there").
