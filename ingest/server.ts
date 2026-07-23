@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { buildDigest, candidateCount, attachQuoted, parseMedia, isReply, buildAuthorPrior, REPLY_MIN_AUTHOR_LIKES } from "./digest.ts";
 import { buildPublicFeedSnapshot, type PublicFeedSnapshot } from "./public_feed.ts";
 
-const PORT = 2727;
+const PORT = Number(process.env.AFY_PORT ?? 2727); // override for throwaway instances (screenshots, tests)
 const DB_PATH = process.env.AFY_DB ?? "afy.db";
 // PRD §5.8 ingest auth. When AFY_TOKEN is set (.env.local), every WRITE endpoint requires a
 // matching x-afy-token header — the extension bakes it in at build (extension/build.sh reads the

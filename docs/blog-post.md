@@ -16,7 +16,10 @@ So I built **actually-for-you** — my feed, re-ranked by my own behavior:
 
 One user. No accounts, no cloud, no API keys. Nothing leaves my laptop.
 
-![The morning digest — my feed, re-ranked, with Keep/Drop votes on every card](reader.png)
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="reader-light.png">
+  <img src="reader.png" alt="The morning digest — my feed, re-ranked, with Keep/Drop votes on every card">
+</picture>
 
 The ranking math turned out to be the easy part. The hard parts were **sensing behavior from
 a page that fights you** and **building an eval I could trust** — including the day the eval
