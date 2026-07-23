@@ -130,6 +130,34 @@ anti-self-deception rules written down before the first serve: the scoreboard pr
 confidence interval **once**, at a predeclared horizon — no peeking, no "run until it's
 significant" — and a TIED at that horizon means "no large effect", never "extend and hope."
 
+## The eval, end to end
+
+Parts 2–5 each fixed one piece of the eval. Here's the whole machine they add up to — two
+layers: an offline guardrail and an online verdict.
+
+**The offline gate** replays every ranker over my hand votes. Three inputs feed it: my
+👍/👎 votes (the only gold labels), behavioral signals, and the LLM rubric scores — the
+last two are strictly *features*, never labels, or the eval would grade its own homework.
+The votes split at the freeze date into a **dev pool** that may advise and a **prospective
+gate pool** that alone can verdict, because no design decision has ever seen it. Nine arms —
+five dumb baselines against four candidates — get an all-pairs AUC on every pool (plus two
+diagnostic cuts: votes on explore-lane cards no ranker picked, and the 200–600 char band
+where length carries no signal). A candidate ships only by beating the *strongest* baseline
+with a bootstrap CI that excludes zero; under 40 post-freeze labels the gate refuses to
+answer at all.
+
+![Flowchart of the offline ship gate: label sources feed pools and scoring arms, an all-pairs AUC with bootstrap CI, and a ship / hold / inconclusive verdict](eval-gate.svg)
+
+**The online interleave** is the deciding vote, because an offline gate can only say "not
+worse than dumb". Two rankers secretly co-draft each morning's digest; every card's opens
+and votes credit — or, for a 👎, debit — the arm that first drafted it. The honesty rails
+are the design: the confidence interval is read exactly **once**, at a horizon declared
+before the first serve; if there aren't 30 judged events yet, the window extends on sample
+size, never on the lean; and a TIED read at the horizon is a final answer, not an
+invitation to keep running.
+
+![Flowchart of the online interleave: team-drafted digest, first-serve credit attribution, horizon and floor checks, then a one-shot bootstrap CI ending in tied or lean](eval-interleave.svg)
+
 ## What I learned
 
 **In behavioral systems, the failure mode is never a crash — it's plausible wrong numbers.**
