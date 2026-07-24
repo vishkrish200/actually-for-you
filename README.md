@@ -6,7 +6,10 @@ revealed taste. It texts me a digest at 8am; every digest secretly A/Bs two rank
 votes grade everything. One user, no cloud, no API keys, zero server dependencies — nothing
 leaves my machine.
 
-![The digest reader — tweets re-ranked by taste-match to my likes](docs/demo.gif)
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="docs/demo-light.gif">
+  <img src="docs/demo.gif" alt="The digest reader — tweets re-ranked by taste-match to my likes" width="656">
+</picture>
 
 _Every card: a **✦ score** (taste + LLM rubric + author prior) and 👍/👎 votes that become the
 eval's gold labels. Two rankers are secretly interleaved in every slate._
@@ -21,7 +24,10 @@ permanent `explore` lane so it never collapses into a filter bubble.
 
 ## Architecture
 
-![Architecture: x.com → extension → ingest → mix ranker → interleaved digest → 8am iMessage, with votes feeding an eval stack that gates the ranker](docs/architecture.png)
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="docs/architecture-light.png">
+  <img src="docs/architecture.png" alt="Architecture: x.com → extension → ingest → mix ranker → interleaved digest → 8am iMessage, with votes feeding an eval stack that gates the ranker">
+</picture>
 
 **Sensor** (`extension/`) — built around how X fights capture:
 - Content (GraphQL hook) and behavior (dwell machine) in **independent failure boundaries**;
