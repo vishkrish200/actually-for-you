@@ -5,7 +5,47 @@ Point new sessions at this file + the PRD for full context.
 
 ---
 
-## ▶ RESUME HERE (2026-07-21) — cached public digest SHIPPED
+## ▶ RESUME HERE (2026-07-27) — M16: online-lr + the split amendment (freeze recorded BEFORE first in-window serve)
+
+**Spec: `notes/spec-m16-online-lr.md` (as-built). The label loop closes: `online-lr` trains daily
+on a growing vote stream, and the eval survives it via a declared, deterministic split.**
+
+- **Freeze parameters (recorded 2026-07-27; verified ZERO in-window rows — `npm run interleave`
+  printed "0 arm(s) with interleaved serves since 2026-07-28"):** `GATE_CUTOFF` 2026-07-15 →
+  **2026-07-28** (the M16 design was chosen while reading the 07-15 pool's aggregate CIs — spent,
+  all of it now training currency). Split at birth, pure function (no column, no RNG):
+  `hashStr("m16-v1\n" + author_id + "\n" + text)` (content-twin key — twins can't straddle pools;
+  tweet_id fallback) — `% 3 === 0` → **gold** (~1/3, eval-only, nothing ever trains on it; live
+  hash share on the current pool: 404/1274 = 31.7%), else **train** (online-lr's labels, can never
+  verdict). Fixture rows without review_ts stay gate-eligible (pre-M16 contract).
+- **`online-lr` (closed-loop arm):** review-lr's recipe in every respect except labels = pre-cutoff
+  PLUS post-cutoff train-split votes cast before each dump run (`trainOk` in eval.ts — the ONE
+  shared boundary; dump pipes per-row `train_ok` + `split`, python consumes, and canaries assert a
+  post-cutoff gold row can never train). daily.ts runs dump→train twice (`--labels frozen|online` →
+  `review_lr_scores` / `online_lr_scores`, independent failure boundaries). Test-then-train by
+  construction: retrain precedes the digest build, so a serve is judged before its outcome can
+  reach training. Behavioral signals still never become labels (the ~0.44 result stands).
+- **New confirmatory window (interleave.ts): `MATCHUP = ["review_lr","online_lr"]`,
+  `WINDOW_START = 2026-07-28`, `HORIZON_DAYS = 7` serve-days** (2-day reads were power-starved —
+  the 07-18 TIED mostly measured low usage). Credit formula, 30-judged floor, tweet-bootstrap CI
+  unchanged from 07-15. THE M16 question: does closing the label loop beat the frozen recipe?
+- **Hygiene fix, same freeze:** window exposures now HARD-CAP at the first `HORIZON_DAYS` distinct
+  serve days — a post-horizon re-run can never grow a closed window (the "TIED at n=117" drift the
+  old CLI printed on the closed 07-16 window is structurally gone; post-horizon prints carry a
+  "window CLOSED — re-read" tag).
+- Ingest tests 132 → **138** green (m16.test.ts: split determinism/ratio/twin-pooling, trainOk
+  exclusions incl. the test-then-train boundary, gate-reads-gold-only, online_lr external-arm
+  ranking; interleave window test re-pinned to the new freeze + a closed-window cap case).
+  Extension 58 green, typecheck clean. Live smokes: both dump modes on afy.db (1,274 rows, all
+  pre-cutoff → all spendable, correct for a fresh freeze), `npm run eval` prints the gate
+  INCONCLUSIVE at 0 gold labels loudly, interleave reports the empty new window correctly.
+- **Day-1 caveat, accepted:** until the first post-cutoff votes arrive, online-lr ≡ review-lr
+  (identical label sets) — the arms diverge as the train stream grows. The python's old
+  strict-subset assert would have false-fired on this state; replaced by the precise canaries.
+
+---
+
+## 2026-07-21 — cached public digest SHIPPED
 
 - Replaced the landing page's static reader screenshot with an eight-card, internally scrollable
   snapshot. Cards carry the stored post text, public media/quote context, and engagement counts;

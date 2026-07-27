@@ -13,11 +13,16 @@ milestone claims here.** Work proceeds one phase at a time; the user approves be
 
 - Raw events are **append-only**. Labels re-derive from raw; never mutate events.
 - Never train the ranker on the ranker's own output. Labels come from observed behavior only.
-- Hand-signed 👍/👎 reviews at-or-after `GATE_CUTOFF` are the ONLY non-circular gold labels —
-  untouchable, nothing trains on them. Pre-cutoff reviews are **spent dev currency** (amendment
-  2026-07-15): usable as training labels for dev-trained arms (`review-lr`), never for verdicts —
-  any dev-pool read of such an arm is a train-set read. If `GATE_CUTOFF` moves forward, the train
-  set is re-cut with it. The `AI_LEXICON` keyword list is a **baseline to beat**, never a label
+- **GOLD-split** hand-signed 👍/👎 reviews at-or-after `GATE_CUTOFF` are the ONLY non-circular
+  gold labels — untouchable, nothing trains on them. Pre-cutoff reviews are **spent dev currency**
+  (amendment 2026-07-15): usable as training labels for dev-trained arms (`review-lr`), never for
+  verdicts — any dev-pool read of such an arm is a train-set read. If `GATE_CUTOFF` moves forward,
+  the train set is re-cut with it. **M16 split (amendment 2026-07-27, cutoff moved → 2026-07-28):**
+  every vote at-or-after the cutoff is assigned AT BIRTH by the deterministic hash in eval.ts
+  (`voteSplit`: `SPLIT_SALT` + content-twin key, ~1/3 gold) — gold is eval-only forever; the
+  train split feeds `online-lr` (labels = pre-cutoff + post-cutoff train-split votes before each
+  retrain, test-then-train) and can never verdict. Changing the salt, the ratio, or the twin key
+  is a gate-design change: re-freeze, cutoff forward. The `AI_LEXICON` keyword list is a **baseline to beat**, never a label
   source — anything it touches is circular for eval.
 - `char_len` / `media_present` / `is_thread` are **confounder controls**: regressed in during
   training, dropped at predict. Never reward features.
@@ -69,6 +74,13 @@ excludes 0" (optional stopping manufactures leans). If the 30-judged-event floor
 the horizon the window extends on n, never on the lean. Opens AND votes both key to a tweet's
 arm-attributed FIRST serve (a cross-arm re-serve must not split numerator and denominator).
 Changing matchup/formula/floor restarts the window.
+
+**M16 window (frozen 2026-07-27, recorded before any in-window serve; `WINDOW_START =
+2026-07-28`, `HORIZON_DAYS = 7` serve-days):** matchup is **review-lr vs online-lr** — the
+frozen-label incumbent against the closed-loop challenger; credit formula, floor, and
+tweet-bootstrap CI unchanged. The prior mix-vs-review-lr window CLOSED 2026-07-18 (TIED at n=49).
+Window exposures hard-cap at the first `HORIZON_DAYS` distinct serve days — post-horizon re-runs
+re-read a frozen window, never grow it.
 
 The author-prior arm (M9 prior run solo, engagement_labels only) is the behavior-only bar:
 "does content modeling add anything over WHO posted?" — a baseline, never a shipper.

@@ -19,13 +19,15 @@ import { DatabaseSync } from "node:sqlite";
 import { buildLabels } from "./labels.ts";
 import { loadRubricScores } from "./rubric.ts";
 import { buildTaste, buildAuthorPrior, scoreText, candidateRows } from "./digest.ts";
-import { GATE_CUTOFF } from "./eval.ts";
+import { GATE_CUTOFF, trainOk, voteSplit } from "./eval.ts";
 
 interface DumpRow {
   tweet_id: string;
   text: string;
   y: 0 | 1;                 // 1 = 👍, 0 = 👎
   review_ts: string | null;
+  train_ok: 0 | 1;          // M16: may this label be TRAINED on? (eval.ts trainOk — mode-dependent)
+  split: "gold" | "train";  // M16: the row's pool by the deterministic hash — piped so the python can canary gold-exclusion
   char_len: number;
   media_present: 0 | 1;
   is_thread: 0 | 1;
@@ -33,6 +35,16 @@ interface DumpRow {
   taste: number;
   prior: number;
 }
+
+// M16 --labels flag: "frozen" (default) = the incumbent review-lr recipe, pre-cutoff labels only,
+// scores → review_lr_scores. "online" = closed-loop arm: pre-cutoff PLUS post-cutoff train-split
+// votes cast before THIS dump run (test-then-train boundary), scores → online_lr_scores. Gold-split
+// votes are excluded from training in both modes by eval.ts's trainOk — the one shared boundary.
+const labelsFlag = process.argv.indexOf("--labels");
+const mode = (labelsFlag >= 0 ? process.argv[labelsFlag + 1] : "frozen") as "frozen" | "online";
+if (mode !== "frozen" && mode !== "online") throw new Error(`--labels must be frozen|online, got "${mode}"`);
+const table = mode === "online" ? "online_lr_scores" : "review_lr_scores";
+const boundary = new Date().toISOString();
 
 const db = new DatabaseSync(process.env.AFY_DB ?? "afy.db");
 
@@ -46,6 +58,8 @@ const out: DumpRow[] = rows.map(r => ({
   text: r.text,
   y: r.kind === "review_pos" ? 1 : 0,
   review_ts: r.review_ts ?? null,
+  train_ok: trainOk(mode, r, boundary) ? 1 : 0,
+  split: voteSplit(r),
   char_len: r.char_len,
   media_present: r.media_present,
   is_thread: r.is_thread,
@@ -72,4 +86,4 @@ const candidates: CandidateRow[] = candidateRows(db, days, Date.now(), prior).ma
   prior: prior.get(r.author_id ?? "") ?? 0,
 }));
 
-console.log(JSON.stringify({ cutoff: GATE_CUTOFF, rows: out, candidates }));
+console.log(JSON.stringify({ cutoff: GATE_CUTOFF, mode, table, rows: out, candidates }));

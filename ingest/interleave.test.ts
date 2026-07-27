@@ -400,34 +400,50 @@ describe("M11 interleave report (read-only math)", () => {
     const serve = db.prepare("INSERT INTO digest_log (digest_date,channel,tweet_id,rank,lane,score,parts,ts,arm) VALUES (?,?,?,?,?,1.0,'{}',?,?)");
     const open = db.prepare("INSERT INTO digest_opens (tweet_id, ts) VALUES (?,?)");
     // Pilot day — before the window; must not appear anywhere in the report.
-    serve.run("2026-07-10", "web", "P1", 1, "taste", "2026-07-10T08:00:00Z", "mix");
-    open.run("P1", "2026-07-10T09:00:00Z");
+    serve.run("2026-07-20", "web", "P1", 1, "taste", "2026-07-20T08:00:00Z", "review_lr");
+    open.run("P1", "2026-07-20T09:00:00Z");
     const serveDay = (day: string) => {
       for (let i = 0; i < 20; i++) {
-        const arm = i % 2 === 0 ? "mix" : "review_lr";
+        const arm = i % 2 === 0 ? "review_lr" : "online_lr";
         serve.run(day, "web", `${day}-${i}`, i + 1, "taste", `${day}T08:00:00Z`, arm);
         open.run(`${day}-${i}`, `${day}T09:00:00Z`);
       }
     };
+    // In-window serve days, one per calendar day from WINDOW_START (M16 freeze: horizon 7).
+    const days = ["2026-07-28", "2026-07-29", "2026-07-30", "2026-07-31",
+      "2026-08-01", "2026-08-02", "2026-08-03", "2026-08-04"];
     // Day 1: 20 opened serves → 20 judged events; 1 < HORIZON_DAYS → no CI regardless of the floor.
-    serveDay("2026-07-16");
+    serveDay(days[0]);
     const day1 = interleaveReport(db); // frozen defaults: WINDOW_START / HORIZON_DAYS
     assert.equal(day1.arms.reduce((s, a) => s + a.served, 0), 20,
       "pilot serve P1 (pre-window) is excluded from the window read");
     assert.ok(!day1.diffCI, "no CI before the predeclared horizon — no peeking");
     assert.match(day1.verdict, new RegExp(`confirmatory window day 1/${HORIZON_DAYS}`));
     assert.match(day1.verdict, /NO PEEKING/);
-    // Day 2: the predeclared horizon. Floor met (40 judged) → the CI reads, once, and the
-    // symmetric fixture (every drafted tweet opened, both arms) is TIED — the window's answer.
-    serveDay("2026-07-17");
-    const day2 = interleaveReport(db);
-    assert.ok(day2.judged >= JUDGED_FLOOR, `floor met (${day2.judged}) at the horizon`);
-    assert.ok(day2.diffCI, "the CI reads AT the predeclared horizon");
-    const [lo, , hi] = day2.diffCI!;
+    // Days 2..horizon-1: still accumulating, still no CI.
+    for (let d = 1; d < HORIZON_DAYS - 1; d++) serveDay(days[d]);
+    const preHorizon = interleaveReport(db);
+    assert.ok(!preHorizon.diffCI, "no CI on the day before the horizon");
+    // The horizon day. Floor long met → the CI reads, once, and the symmetric fixture (every
+    // drafted tweet opened, both arms) is TIED — the window's answer.
+    serveDay(days[HORIZON_DAYS - 1]);
+    const atHorizon = interleaveReport(db);
+    assert.ok(atHorizon.judged >= JUDGED_FLOOR, `floor met (${atHorizon.judged}) at the horizon`);
+    assert.ok(atHorizon.diffCI, "the CI reads AT the predeclared horizon");
+    const [lo, , hi] = atHorizon.diffCI!;
     assert.ok(lo <= 0 && hi >= 0, `symmetric credits → CI [${lo}, ${hi}] straddles 0`);
-    assert.match(day2.verdict, /TIED/);
+    assert.match(atHorizon.verdict, /TIED/);
+    assert.ok(!atHorizon.verdict.includes("window CLOSED"), "at the horizon the read is the fresh one");
+    // M16 hygiene cap: a re-run AFTER the horizon must NOT grow the window — serves on day
+    // horizon+1 are excluded, the exposure set (and judged n) stays frozen, and the print says so.
+    serveDay(days[HORIZON_DAYS]);
+    const postHorizon = interleaveReport(db);
+    assert.equal(postHorizon.judged, atHorizon.judged,
+      "post-horizon serves never enter the window — exposures frozen at the horizon");
+    assert.deepEqual(postHorizon.diffCI, atHorizon.diffCI, "the frozen window re-reads identically");
+    assert.match(postHorizon.verdict, /window CLOSED/);
     assert.ok(WINDOW_START > "2026-07-14", "the window starts after the freeze date");
-    assert.equal(HORIZON_DAYS, 2, "the 2026-07-15 amendment: read at 2 days, not 14");
+    assert.equal(HORIZON_DAYS, 7, "the M16 freeze: read at 7 serve days (2-day reads were power-starved)");
   });
 });
 

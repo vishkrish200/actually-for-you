@@ -1,8 +1,10 @@
 # M16 spec — online-lr: closing the label loop without breaking the gate
 
-> STATUS: DRAFT for user review (2026-07-27). Nothing here is frozen until the PROGRESS
-> entry is written; per the freeze protocol every parameter below must be recorded BEFORE
-> the first in-window serve.
+> STATUS: BUILT 2026-07-27 (branch m16-online-lr); freeze recorded in PROGRESS before any
+> in-window serve. Decisions as built: `GATE_CUTOFF = 2026-07-28`, `SPLIT_SALT = "m16-v1"`,
+> gold ratio 1/3, `HORIZON_DAYS = 7`, matchup review_lr vs online_lr. Deviation from draft:
+> the split is piped per-row to the python (`train_ok` + `split`) and the old strict-subset
+> assert became two precise leak canaries (it false-fired on the fresh-freeze state).
 
 ## Problem
 

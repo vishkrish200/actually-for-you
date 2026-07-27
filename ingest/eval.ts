@@ -34,6 +34,7 @@ import type { LabeledRow } from "./labels.ts";
 import { buildLabels, AI_LEXICON } from "./labels.ts";
 import { loadRubricScores, loadRubricScoresBySha, type RubricScores, type ShaScores } from "./rubric.ts";
 import { scoreText, mixFinal, type TasteModel } from "./digest.ts";
+import { hashStr } from "./ranker_v1.ts";
 
 export { loadRubricScores, type RubricScores }; // re-export: pre-M9 home of these was eval.ts
 
@@ -158,6 +159,7 @@ export interface MixInputs { taste: TasteModel; authorPrior: Map<string, number>
 function armsFor(
   pool: LabeledRow[], rubric?: RubricScores, mix?: MixInputs,
   reviewLr?: { label: string; scores: Map<string, number> },
+  onlineLr?: { label: string; scores: Map<string, number> },
 ): [string, (r: LabeledRow) => number][] {
   const named: [string, (r: LabeledRow) => number][] = [
     ["random", randomScorer(pool)],
@@ -170,6 +172,9 @@ function armsFor(
   // score = -1 rank-last, the rubric arm's contract (the python asserts full pool coverage, so
   // this sentinel should never actually trigger).
   if (reviewLr) named.push([reviewLr.label, (r) => reviewLr.scores.get(r.tweet_id) ?? -1]);
+  // M16: online-lr (closed-loop) — same external-scorer contract as review-lr, labels grow daily
+  // with the post-cutoff train-split stream. Same -1 rank-last sentinel for missing scores.
+  if (onlineLr) named.push([onlineLr.label, (r) => onlineLr.scores.get(r.tweet_id) ?? -1]);
   if (mix) {
     // Behavior-only baseline: the M9 author prior run solo. Non-circular (engagement_labels only,
     // never reviews) — the bar that answers "does content modeling add anything over WHO posted?"
@@ -205,14 +210,46 @@ export interface PoolResult {
   champion?: string;   // highest-AUC clearer
 }
 
-// PROSPECTIVE gate cutoff, frozen 2026-07-14. Votes with review_ts BEFORE this date are the DEV
-// pool: the AUC metric, the strongest-baseline reference, and the interleave credit formula were
-// all chosen while looking at them, so they can regression-test the gate but never issue a verdict.
-// Votes from this date on are untouched by any design decision — THE ship gate reads only those.
+// PROSPECTIVE gate cutoff, frozen 2026-07-14; MOVED FORWARD 2026-07-28 (M16 split amendment —
+// the online-lr design was chosen while reading the 07-15 pool's aggregate CIs, which spends it).
+// Votes with review_ts BEFORE this date are the DEV pool: the AUC metric, the strongest-baseline
+// reference, the interleave credit formula, and the M16 split policy were all chosen while
+// looking at them, so they can regression-test the gate but never issue a verdict — and they are
+// ALL training currency now (online-lr labels; the 2026-07-15 "spent dev currency" doctrine).
 // Move this date only FORWARD, and only when re-freezing after a deliberate gate-design change
 // (moving it back would launder dev votes into the gate). Rows with no review_ts (fixtures) are
 // treated as post-cutoff.
-export const GATE_CUTOFF = "2026-07-15";
+export const GATE_CUTOFF = "2026-07-28";
+
+// ---- M16 split (frozen 2026-07-28 with the cutoff above) ----
+// Online learning and the honest gate compete for the same scarce votes, so the stream is split
+// AT BIRTH, deterministically: ~1/3 gold (eval-only, NOTHING ever trains on it — the new
+// untouchable pool), ~2/3 train (online-lr's label stream, can NEVER verdict). The split is a
+// pure function of the SALT + the content-twin key (author_id + text — digest.ts's twinKey, so
+// X's duplicate tweet_ids for one posting event can't put identical text in both pools), falling
+// back to tweet_id when text is missing. Deterministic = tamper-evident: no stored column, no
+// RNG state, nothing to quietly reassign after seeing a result. Changing SPLIT_SALT or the ratio
+// is a gate-design change: re-freeze, GATE_CUTOFF forward.
+export const SPLIT_SALT = "m16-v1";
+export function voteSplit(r: { author_id?: string | null; text?: string | null; tweet_id: string }): "gold" | "train" {
+  const twin = r.text ? `${r.author_id ?? ""}\n${r.text}` : r.tweet_id;
+  return hashStr(`${SPLIT_SALT}\n${twin}`) % 3 === 0 ? "gold" : "train";
+}
+
+// May a row's label be TRAINED on? Shared by review_lr_dump.ts (which pipes it per-row to the
+// python) and the tests — the train boundary and the gate boundary live in one file, always.
+// frozen mode = the incumbent review-lr recipe: pre-cutoff votes only, byte-for-byte the M14 rule.
+// online mode = pre-cutoff votes PLUS post-cutoff train-split votes cast before `boundary` (the
+// dump run's timestamp): test-then-train — a serve is judged before its own outcome can reach
+// training. Gold-split rows and rows with no review_ts are NEVER train-eligible in either mode.
+export function trainOk(
+  mode: "frozen" | "online", r: { review_ts?: string | null; author_id?: string | null; text?: string | null; tweet_id: string },
+  boundary: string,
+): boolean {
+  if (!r.review_ts) return false;
+  if (r.review_ts < GATE_CUTOFF) return true;
+  return mode === "online" && voteSplit(r) === "train" && r.review_ts < boundary;
+}
 
 // Floor below which the gate is too thin to trust either way: fewer than REVIEW_MIN_N total hand
 // labels, OR fewer than MIN_PER_CLASS of either sign (a lopsided pool can't estimate the minority
@@ -293,9 +330,10 @@ function evalCut(
   poolName: string, pos: LabeledRow[], neg: LabeledRow[],
   rubric?: RubricScores, mix?: MixInputs, withCI = true,
   reviewLr?: { label: string; scores: Map<string, number> },
+  onlineLr?: { label: string; scores: Map<string, number> },
 ): PoolResult {
   const pool = [...pos, ...neg];
-  const named = armsFor(pool, rubric, mix, reviewLr);
+  const named = armsFor(pool, rubric, mix, reviewLr, onlineLr);
   let tiedPairs = 0;
   const rows: PoolResult["rows"] = named.map(([name, sc], i) => {
     const tied = aucOnKeywordTies(pos, neg, sc);
@@ -347,7 +385,10 @@ function calibrationFor(sh: ShaScores, pos: LabeledRow[], neg: LabeledRow[]): Sh
 
 export interface EvalResult {
   reviewOnly: PoolResult;   // ALL hand-signed pairs — the DEV pool (advisory regression read)
-  reviewGate: PoolResult;   // post-GATE_CUTOFF votes ONLY — THE prospective ship gate
+  reviewGate: PoolResult;   // post-GATE_CUTOFF GOLD-split votes ONLY — THE prospective ship gate
+  // M16: post-cutoff TRAIN-split votes — online-lr's label stream. A train-set read for that arm
+  // (and split-selected for every arm), so advisory forever, never a verdict.
+  reviewTrain: PoolResult;
   // M12: votes attributed to ✧ explore-lane serves ONLY. The main review pool is serve-selected —
   // most votes land on cards the mix ranked up, so 👎s concentrate in the serving arm's own
   // high-score region and the pool drifts toward "the mix's audit log". Explore cards are
@@ -375,23 +416,34 @@ export interface EvalResult {
 export function runEval(
   rows: LabeledRow[], rubric?: RubricScores, mix?: MixInputs, shaScores: ShaScores[] = [],
   reviewLr?: { label: string; scores: Map<string, number> },
+  onlineLr?: { label: string; scores: Map<string, number> },
 ): EvalResult {
   const reviewPos = rows.filter(r => r.kind === "review_pos");
   const reviewNeg = rows.filter(r => r.kind === "review_neg");
 
-  // DEV pool: every hand-signed 👍 vs 👎 — no balancing (reviews still train nothing). Advisory:
-  // the gate's own design was chosen looking at these votes, so they regression-test, never verdict.
+  // DEV pool: every hand-signed 👍 vs 👎 — no balancing. Advisory: the gate's own design was
+  // chosen looking at these votes (and since M16 they are online-lr training currency too), so
+  // they regression-test, never verdict.
   const reviewOnly = evalCut(
     "REVIEW-DEV (all hand-signed 👍 vs 👎; pre-cutoff included) — ADVISORY, NEVER A VERDICT",
-    reviewPos, reviewNeg, rubric, mix, true, reviewLr);
+    reviewPos, reviewNeg, rubric, mix, true, reviewLr, onlineLr);
 
-  // THE gate: votes cast at-or-after GATE_CUTOFF only — no design decision has seen them.
-  // Rows without a review_ts (fixtures) count as post-cutoff.
+  // THE gate: GOLD-split votes cast at-or-after GATE_CUTOFF only — no design decision has seen
+  // them and nothing ever trains on them (M16 split). Rows without a review_ts (fixtures) count
+  // as post-cutoff gold, preserving the pre-M16 fixture contract.
   const isDev = (r: LabeledRow) => !!r.review_ts && r.review_ts < GATE_CUTOFF;
-  const gatePos = reviewPos.filter(r => !isDev(r)), gateNeg = reviewNeg.filter(r => !isDev(r));
+  const isGold = (r: LabeledRow) => !isDev(r) && (!r.review_ts || voteSplit(r) === "gold");
+  const gatePos = reviewPos.filter(isGold), gateNeg = reviewNeg.filter(isGold);
   const reviewGate = evalCut(
-    `REVIEW-PROSPECTIVE (votes since ${GATE_CUTOFF}) — NON-CIRCULAR SHIP GATE`,
-    gatePos, gateNeg, rubric, mix, true, reviewLr);
+    `REVIEW-PROSPECTIVE (gold-split votes since ${GATE_CUTOFF}) — NON-CIRCULAR SHIP GATE`,
+    gatePos, gateNeg, rubric, mix, true, reviewLr, onlineLr);
+
+  // M16 train stream: the post-cutoff votes online-lr learns from (~2/3 by the split hash).
+  // Advisory forever — a train-set read for online-lr and split-selected for everyone else.
+  const isTrainStream = (r: LabeledRow) => !isDev(r) && !!r.review_ts && voteSplit(r) === "train";
+  const reviewTrain = evalCut(
+    `REVIEW-TRAIN-STREAM (train-split votes since ${GATE_CUTOFF}) — ONLINE-LR'S LABELS; ADVISORY, NEVER A VERDICT`,
+    reviewPos.filter(isTrainStream), reviewNeg.filter(isTrainStream), rubric, mix, true, reviewLr, onlineLr);
 
   // M12 audit: votes attributed to ✧ explore-lane serves ONLY — cards no ranker scored into the
   // slate (sampled from the rankers' rejects; ranker-conditioned, not an unbiased sample).
@@ -400,7 +452,7 @@ export function runEval(
   const auditNeg = reviewNeg.filter(r => r.served_lane === "explore");
   const reviewAudit = evalCut(
     "REVIEW-EXPLORE (✧-lane votes only) — RANKER-BLIND-SPOT AUDIT", auditPos, auditNeg, rubric, mix,
-    true, reviewLr);
+    true, reviewLr, onlineLr);
 
   // Length-band cut: ALL votes (pre- and post-cutoff) whose tweet sits in the band where char_len is
   // blind. Pooled deliberately — this is already advisory-only, and the whole point is to see where
@@ -408,7 +460,7 @@ export function runEval(
   const inBand = (r: LabeledRow) => r.char_len >= BAND_LO && r.char_len <= BAND_HI;
   const reviewBand = evalCut(
     `REVIEW-LENGTH-BAND (${BAND_LO}–${BAND_HI} chars — where char_len is blind) — ADVISORY, NEVER A VERDICT`,
-    reviewPos.filter(inBand), reviewNeg.filter(inBand), rubric, mix, true, reviewLr);
+    reviewPos.filter(inBand), reviewNeg.filter(inBand), rubric, mix, true, reviewLr, onlineLr);
 
   // M8 coverage on the FULL review pool at the latest sha — the number that qualifies the rubric
   // verdict (measured against the same rows the arm ranks, so it can't over-claim).
@@ -433,7 +485,7 @@ export function runEval(
     .sort((a, b) => (a.firstTs < b.firstTs ? -1 : a.firstTs > b.firstTs ? 1 : 0))
     .map(sh => calibrationFor(sh, reviewPos, reviewNeg));
 
-  return { reviewOnly, reviewGate, reviewAudit, reviewBand, rubricCoverage, gateCoverage, calibration };
+  return { reviewOnly, reviewGate, reviewTrain, reviewAudit, reviewBand, rubricCoverage, gateCoverage, calibration };
 }
 
 // ---- formatting (▼-table aesthetic preserved) ----
@@ -493,9 +545,9 @@ export function formatEval(res: EvalResult): string {
   const r = res.reviewGate;
   const total = r.nPos + r.nNeg;
   const gate = belowFloor(r.nPos, r.nNeg)
-    ? `⏳ INCONCLUSIVE — only ${total} post-cutoff labels (${r.nPos} 👍 / ${r.nNeg} 👎 since ${GATE_CUTOFF}; need ` +
-      `${REVIEW_MIN_N}+ total AND ≥${MIN_PER_CLASS} of each sign). The prospective gate is accumulating — keep voting; ` +
-      `pre-cutoff votes are dev-only and can never verdict.`
+    ? `⏳ INCONCLUSIVE — only ${total} post-cutoff GOLD-split labels (${r.nPos} 👍 / ${r.nNeg} 👎 since ${GATE_CUTOFF}; need ` +
+      `${REVIEW_MIN_N}+ total AND ≥${MIN_PER_CLASS} of each sign). The prospective gate is accumulating — keep voting ` +
+      `(~1/3 of new votes land here by the M16 split); pre-cutoff and train-split votes can never verdict.`
     : r.ships
       ? `SHIP ✅  ${r.champion} beats ${r.baseline} (the strongest baseline) on the PROSPECTIVE review gate (post-cutoff votes only; all-pairs AUC AND a diff CI excluding 0) at ${r.nPos} 👍 / ${r.nNeg} 👎.`
       : `HOLD ⛔  no candidate beats ${r.baseline} (the strongest baseline) on the PROSPECTIVE review gate at ${r.nPos} 👍 / ${r.nNeg} 👎 — the baselines stay champion.`;
@@ -548,10 +600,17 @@ export function formatEval(res: EvalResult): string {
       `edges were read off the dev pool AND this cut postdates a HOLD — it says WHERE the ranker fails, never ` +
       `whether it ships. Making it a bar to clear = a gate-design change = re-freeze, GATE_CUTOFF forward.`;
 
+  // M16 train stream: print only when populated (empty until post-cutoff votes accumulate) — a
+  // train-set read for online-lr, split-selected for every arm. One note, table only with pairs.
+  const t = res.reviewTrain;
+  const trainNote = `train stream: online-lr's labels (~2/3 of post-cutoff votes by the split hash) — ` +
+    `train-set read for that arm, advisory for all. The gate above reads ONLY the gold third.`;
+
   return [
     ...(devDiffers ? [formatPool(dev), devNote, ""] : []),
     // an empty gate pool prints no degenerate all-0.5 table — the verdict line carries the state
     ...(r.pairs > 0 ? [formatPool(r)] : []),
+    ...(t.pairs > 0 ? [formatPool(t), trainNote] : []),
     ...(coverage ? [coverage] : []),
     ...(calibration ? ["", calibration] : []),
     "",
@@ -572,36 +631,38 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   // rubric_scores table (return empty) and NEVER create it — the scorer/server own the CREATE.
   // MixInputs mirror exactly what buildDigest ships: same taste profile, same author prior.
   // review_lr_scores (review_lr.py) is optional the same way: absent table → arm not shown.
-  let reviewLr: { label: string; scores: Map<string, number> } | undefined;
-  try {
-    const rows = db.prepare(`SELECT tweet_id, model, score FROM review_lr_scores`).all() as
-      { tweet_id: string; model: string; score: number }[];
-    if (rows.length) reviewLr = {
-      label: "review-lr (dev-trained)",
-      scores: new Map(rows.map(r => [r.tweet_id, r.score])),
-    };
-  } catch { /* table not created yet — run review_lr_dump.ts + review_lr.py */ }
+  const loadExternal = (table: string, label: string) => {
+    try {
+      const rows = db.prepare(`SELECT tweet_id, model, score FROM ${table}`).all() as
+        { tweet_id: string; model: string; score: number }[];
+      if (rows.length) return { label, scores: new Map(rows.map(r => [r.tweet_id, r.score])) };
+    } catch { /* table not created yet — run review_lr_dump.ts + review_lr.py */ }
+    return undefined;
+  };
+  const reviewLr = loadExternal("review_lr_scores", "review-lr (dev-trained)");
+  const onlineLr = loadExternal("online_lr_scores", "online-lr (closed-loop)");
   const labeled = buildLabels(db);
   console.log(formatEval(runEval(
     labeled, loadRubricScores(db),
     { taste: buildTaste(db), authorPrior: buildAuthorPrior(db) },
     loadRubricScoresBySha(db),
-    reviewLr,
+    reviewLr, onlineLr,
   )));
   // Coverage guard for the review-lr arm — the rubric-coverage doctrine, one table over. The arm
   // ranks a missing tweet last via the -1 sentinel, so a stale review_lr_scores (votes cast since
   // the last review_lr.py run) silently poisons the gate with rank-last rows that say nothing
   // about ranking quality. Print-only: the verdict logic is untouched, this just refuses to let a
   // stale-score read pass unnoticed.
-  if (reviewLr) {
-    const poolIds = labeled
-      .filter(r => r.kind === "review_pos" || r.kind === "review_neg")
-      .map(r => r.tweet_id);
-    const missing = poolIds.filter(id => !reviewLr!.scores.has(id)).length;
-    console.log(`review-lr coverage: ${poolIds.length - missing}/${poolIds.length} review-pool tweets scored`);
+  const poolIds = labeled
+    .filter(r => r.kind === "review_pos" || r.kind === "review_neg")
+    .map(r => r.tweet_id);
+  for (const [name, ext] of [["review-lr", reviewLr], ["online-lr", onlineLr]] as const) {
+    if (!ext) continue;
+    const missing = poolIds.filter(id => !ext.scores.has(id)).length;
+    console.log(`${name} coverage: ${poolIds.length - missing}/${poolIds.length} review-pool tweets scored`);
     if (missing > 0) {
       console.log(
-        `⚠ review-lr scores STALE (missing ${missing} of ${poolIds.length} pool tweets — re-run ` +
+        `⚠ ${name} scores STALE (missing ${missing} of ${poolIds.length} pool tweets — re-run ` +
         `review_lr_dump.ts + review_lr.py); arm ranks them last`,
       );
     }

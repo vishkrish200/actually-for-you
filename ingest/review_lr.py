@@ -48,6 +48,13 @@ with open(sys.argv[1]) as f:
 # The cutoff is piped from eval.ts's GATE_CUTOFF via review_lr_dump.ts — no literal here, so the
 # train boundary and the gate boundary cannot diverge.
 GATE_CUTOFF = dump["cutoff"]
+# M16: the dump names its mode and output table ("frozen" → review_lr_scores, the incumbent
+# recipe; "online" → online_lr_scores, the closed-loop arm). Allowlisted — never interpolate an
+# arbitrary string into SQL, even locally.
+MODE = dump.get("mode", "frozen")
+TABLE = dump.get("table", "review_lr_scores")
+assert TABLE in {"review_lr_scores", "online_lr_scores"}, f"unexpected table {TABLE!r}"
+TAG = "online-lr" if MODE == "online" else "review-lr"
 pool = dump["rows"]
 # Predict-only candidates (the digest's own pool, M14 online arm) — NEVER trained on: no y, and
 # candidateRows excludes reviewed tweets so they are disjoint from the labeled rows by construction
@@ -57,18 +64,30 @@ assert GATE_CUTOFF and isinstance(GATE_CUTOFF, str), "dump missing cutoff — re
 assert pool, "empty review pool dump — run review_lr_dump.ts first"
 overlap = {r["tweet_id"] for r in pool} & {c["tweet_id"] for c in candidates}
 assert not overlap, f"candidates overlap the review pool ({len(overlap)} ids) — dump is broken"
-print(f"[review-lr] gate cutoff (piped from eval.ts GATE_CUTOFF): {GATE_CUTOFF}")
+print(f"[{TAG}] gate cutoff (piped from eval.ts GATE_CUTOFF): {GATE_CUTOFF}")
 
 # ---- train/pool split — the integrity boundary ----
-is_train = lambda r: r["review_ts"] is not None and r["review_ts"] < GATE_CUTOFF
+# M16: TS owns the boundary. eval.ts's trainOk() marked each row train_ok at dump time (frozen
+# mode: pre-cutoff only, byte-for-byte the M14 rule; online mode: + post-cutoff train-split votes
+# before the dump's own timestamp — test-then-train). Gold-split rows are NEVER train_ok, so the
+# gate pool cannot leak into training here even if this script wanted it to.
+is_train = lambda r: bool(r.get("train_ok"))
 train = [r for r in pool if is_train(r)]
-assert train, "empty train set — no pre-cutoff (dev) reviews to train on"
-assert len(train) < len(pool), (
-    f"train set ({len(train)}) must be a STRICT subset of the pool ({len(pool)}) — "
-    "if this fires, the whole pool is pre-cutoff and there is nothing for the gate to score"
-)
+assert train, "empty train set — no train-eligible reviews in the dump"
+# Leak canaries (replace the old strict-subset assert, which false-fired on a fresh re-freeze
+# when zero post-cutoff votes exist yet): (1) a row with no review_ts must never train; (2) a
+# post-cutoff GOLD-split row must never train — that is the exact leak the M16 split exists to
+# prevent (the arm training on the votes the gate verdicts on). The split is piped per-row from
+# the dump (eval.ts voteSplit) so this check can't false-fire at small n.
+assert not any(is_train(r) for r in pool if r["review_ts"] is None), "no-ts rows must never train"
+assert not any(
+    is_train(r) for r in pool
+    if r.get("split") == "gold" and r["review_ts"] is not None and r["review_ts"] >= GATE_CUTOFF
+), "a post-cutoff GOLD row is train-eligible — the gate pool is leaking into training"
+if len(train) == len(pool):
+    print(f"[{TAG}] NOTE: every pool row is train-eligible (fresh cutoff — no post-cutoff votes yet)")
 n_pos = sum(r["y"] for r in train)
-print(f"[review-lr] train set (pre-cutoff, dev-only): {len(train)} reviews "
+print(f"[{TAG}] train set ({MODE} labels): {len(train)} reviews "
       f"({n_pos} pos / {len(train) - n_pos} neg) of {len(pool)} total review-pool rows; "
       f"{len(candidates)} predict-only digest candidates")
 
@@ -132,15 +151,15 @@ val_aucs: dict[float, float] = {}
 for C in C_GRID:
     if len(set(y_fit.tolist())) < 2:
         val_aucs[C] = float("nan")
-        print(f"[review-lr]   C={C:<5} time-split val AUC = n/a (single-class fit split)")
+        print(f"[{TAG}]   C={C:<5} time-split val AUC = n/a (single-class fit split)")
         continue
     lr_c = LogisticRegression(C=C, max_iter=2000).fit(X_fit, y_fit)
     if len(val_rows) == 0 or len(set(y_val.tolist())) < 2:
         val_aucs[C] = float("nan")
-        print(f"[review-lr]   C={C:<5} time-split val AUC = n/a (single-class or empty val split)")
+        print(f"[{TAG}]   C={C:<5} time-split val AUC = n/a (single-class or empty val split)")
     else:
         val_aucs[C] = roc_auc_score(y_val, lr_c.decision_function(X_val))
-        print(f"[review-lr]   C={C:<5} time-split val AUC = {val_aucs[C]:.4f}")
+        print(f"[{TAG}]   C={C:<5} time-split val AUC = {val_aucs[C]:.4f}")
 
 valid = {c: v for c, v in val_aucs.items() if not np.isnan(v)}
 if valid:
@@ -148,9 +167,9 @@ if valid:
     chosen_C = min(c for c, v in valid.items() if v == best_auc)  # tie-break: more regularization
 else:
     chosen_C = 0.1
-    print("[review-lr]   WARNING: time-split val AUC undefined for every C (too few/degenerate dev "
+    print(f"[{TAG}]   WARNING: time-split val AUC undefined for every C (too few/degenerate dev "
           f"votes) — defaulting to C={chosen_C}")
-print(f"[review-lr] chosen C = {chosen_C}")
+print(f"[{TAG}] chosen C = {chosen_C}")
 
 # ---- refit on the FULL train set with the chosen C ----
 X_train_full = build_X(train, np.array([emb_by_id[r["tweet_id"]] for r in train]))
@@ -158,9 +177,9 @@ y_train_full = np.array([r["y"] for r in train])
 lr = LogisticRegression(C=chosen_C, max_iter=2000).fit(X_train_full, y_train_full)
 train_auc = roc_auc_score(y_train_full, lr.decision_function(X_train_full))
 best_val_auc = val_aucs.get(chosen_C, float("nan"))
-print(f"[review-lr] train-set AUC (apparent, controls in, C={chosen_C}) = {train_auc:.4f}  "
+print(f"[{TAG}] train-set AUC (apparent, controls in, C={chosen_C}) = {train_auc:.4f}  "
       f"— TRAIN-SET READ, NOT THE GATE")
-print(f"[review-lr] dev-internal time-split val AUC (chosen C) = "
+print(f"[{TAG}] dev-internal time-split val AUC (chosen C) = "
       f"{'n/a' if np.isnan(best_val_auc) else f'{best_val_auc:.4f}'}  — TRAIN-SET READ, NOT THE GATE")
 
 # ---- PREDICT for the review pool AND the digest candidates: non-control coefficients only,
@@ -169,19 +188,19 @@ X_all = build_X(score_rows, all_emb)
 scores = X_all[:, :N_NONCONTROL] @ lr.coef_[0, :N_NONCONTROL] + lr.intercept_[0]
 
 db = sqlite3.connect(os.environ.get("AFY_DB", "afy.db"))
-db.execute("CREATE TABLE IF NOT EXISTS review_lr_scores (tweet_id TEXT PRIMARY KEY, model TEXT, score REAL)")
-db.execute("DELETE FROM review_lr_scores")  # one experiment at a time; the model column names it
-model_name = f"review-lr {MODEL}+rubric+taste+prior C={chosen_C}"
+db.execute(f"CREATE TABLE IF NOT EXISTS {TABLE} (tweet_id TEXT PRIMARY KEY, model TEXT, score REAL)")
+db.execute(f"DELETE FROM {TABLE}")  # one experiment at a time; the model column names it
+model_name = f"{TAG} {MODEL}+rubric+taste+prior C={chosen_C}"
 db.executemany(
-    "INSERT INTO review_lr_scores (tweet_id, model, score) VALUES (?, ?, ?)",
+    f"INSERT INTO {TABLE} (tweet_id, model, score) VALUES (?, ?, ?)",
     [(r["tweet_id"], model_name, float(s)) for r, s in zip(score_rows, scores)],
 )
 db.commit()
 
 # ponytail check: full coverage of BOTH sets (review pool for eval, candidates for the digest
 # arm), and the model actually separates something.
-n = db.execute("SELECT count(*) FROM review_lr_scores").fetchone()[0]
+n = db.execute(f"SELECT count(*) FROM {TABLE}").fetchone()[0]
 assert n == len(score_rows), f"coverage {n}/{len(score_rows)} (pool {len(pool)} + candidates {len(candidates)})"
 assert float(np.std(scores)) > 0, "degenerate scores"
-print(f"[review-lr] wrote {n} scores ({len(pool)} review-pool + {len(candidates)} candidates) to "
-      f"review_lr_scores as {model_name!r} (std {np.std(scores):.4f})")
+print(f"[{TAG}] wrote {n} scores ({len(pool)} review-pool + {len(candidates)} candidates) to "
+      f"{TABLE} as {model_name!r} (std {np.std(scores):.4f})")

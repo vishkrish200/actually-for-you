@@ -58,17 +58,32 @@ export const JUDGED_FLOOR = 30;
 // HONEST POWER NOTE: at a 2-day n (likely ~100–200 judged events) the CI only separates LARGE
 // effects — a TIED read at day 2 means "no large effect detected", not "no effect"; any follow-up
 // window must be predeclared fresh, never an extension of a lean.
-export const WINDOW_START = "2026-07-16";
-export const HORIZON_DAYS = 2;
+// M16 window, frozen 2026-07-28 BEFORE any in-window serve: matchup review_lr (frozen-label
+// incumbent) vs online_lr (closed-loop challenger — labels grow daily with the train-split vote
+// stream; recipe = review-lr's in every other respect). Credit formula (opens + 👍 − 👎),
+// 30-judged floor, and the tweet-bootstrap CI are all UNCHANGED from the 07-15 freeze. Horizon
+// 2 → 7 serve-days: the 07-18 read (TIED at n=49) mostly measured two low-usage days; 7 serve
+// days projects n≈150–250 at recent voting rates. The prior mix-vs-review_lr window CLOSED
+// 2026-07-18 with its one predeclared read: TIED at n=49, CI [-0.077, +0.343] — PROGRESS.
+// M16 hygiene fix, same freeze: exposures now HARD-CAP at the first HORIZON_DAYS distinct serve
+// days (see maxDate below), so re-running after the horizon can never grow the window with new
+// serves — the post-horizon "TIED at n=117" drift the old window's CLI printed is structurally
+// gone. (Late votes/opens on in-window serves may still mature a re-run's numbers slightly; the
+// canonical read is the one recorded at the horizon, in PROGRESS.)
+export const WINDOW_START = "2026-07-28";
+export const HORIZON_DAYS = 7;
 
 // Arm-attributed FIRST serve per tweet within the window: the earliest in-window serve that a team
 // drafted (arm IS NOT NULL). funnel.ts's FIRST_SERVE doctrine — exposure = first sight, re-serves
 // don't re-count — scoped to interleaved serves. SQLite's bare-column-with-MIN rule pins
 // arm/digest_date to that first row. The `?` is windowStart (a pilot tweet re-drafted in-window
 // counts as a fresh in-window exposure — its judgments happen in the window).
+// Two params: windowStart AND maxDate (M16 horizon cap) — the window's exposures freeze at the
+// first HORIZON_DAYS distinct serve days, so a post-horizon re-run reads the same window, not a
+// silently grown one.
 const ARM_FIRST_SERVE = `
   SELECT tweet_id, arm, digest_date, MIN(ts) AS ts
-  FROM digest_log WHERE arm IS NOT NULL AND digest_date >= ? GROUP BY tweet_id`;
+  FROM digest_log WHERE arm IS NOT NULL AND digest_date >= ? AND digest_date <= ? GROUP BY tweet_id`;
 // A vote's context = the arm-attributed FIRST serve (same row opens key to — numerator and
 // denominator stay on one arm even when the OTHER arm re-serves the tweet later; the old
 // latest-serve-before-vote join could credit an open to arm A and the vote to arm B). Latest
@@ -157,17 +172,27 @@ export function interleaveReport(
     return emptyReport(`insufficient data — digest_log has no \`arm\` column yet (server not restarted since M11?). ` +
       `Restart the server, then serve an interleaved digest and re-run.`);
   }
+  // M16 horizon cap: the window's exposures are the first `horizonDays` DISTINCT serve days at or
+  // after windowStart — serves on later days are NOT part of this window, ever. Statelessly frozen:
+  // a re-run next week reads the same exposure set the horizon read saw (only late votes/opens on
+  // those same serves can mature the numbers; the canonical read stays the recorded one).
+  const windowDates = (db.prepare(`
+    SELECT DISTINCT digest_date FROM digest_log WHERE arm IS NOT NULL AND digest_date >= ?
+    ORDER BY digest_date`).all(windowStart) as { digest_date: string }[]).map(d => d.digest_date);
+  // horizonDays <= 0 = no horizon (post-hoc pilot reads in tests) — uncapped, pre-M16 behavior.
+  const closed = horizonDays > 0 && windowDates.length > horizonDays;
+  const maxDate = closed ? windowDates[horizonDays - 1] : "9999-12-31";
   // Per-arm serve + open counts. LEFT JOIN opens at-or-after the arm-attributed first serve.
   const serveOpen = db.prepare(`
     WITH fs AS (${ARM_FIRST_SERVE})
     SELECT fs.arm AS arm, COUNT(*) AS served, COUNT(DISTINCT o.tweet_id) AS opened
     FROM fs LEFT JOIN digest_opens o ON o.tweet_id = fs.tweet_id AND o.ts >= fs.ts
-    GROUP BY fs.arm`).all(windowStart) as { arm: string; served: number; opened: number }[];
+    GROUP BY fs.arm`).all(windowStart, maxDate) as { arm: string; served: number; opened: number }[];
   // Per-arm vote tallies from the arm-scoped vote-serve join.
   const votes = db.prepare(`
     WITH vs AS (${VOTE_ARM_SERVE})
     SELECT arm, SUM(verdict = 1) AS up, SUM(verdict = -1) AS down FROM vs GROUP BY arm`)
-    .all(windowStart) as { arm: string; up: number | null; down: number | null }[];
+    .all(windowStart, maxDate) as { arm: string; up: number | null; down: number | null }[];
 
   const upByArm = new Map(votes.map(v => [v.arm, Number(v.up ?? 0)]));
   const downByArm = new Map(votes.map(v => [v.arm, Number(v.down ?? 0)]));
@@ -185,17 +210,17 @@ export function interleaveReport(
     SELECT fs.arm AS arm, fs.digest_date AS digest_date, COUNT(*) AS served,
       COUNT(DISTINCT o.tweet_id) AS opened
     FROM fs LEFT JOIN digest_opens o ON o.tweet_id = fs.tweet_id AND o.ts >= fs.ts
-    GROUP BY fs.arm, fs.digest_date`).all(windowStart) as { arm: string; digest_date: string; served: number; opened: number }[];
+    GROUP BY fs.arm, fs.digest_date`).all(windowStart, maxDate) as { arm: string; digest_date: string; served: number; opened: number }[];
   const dayUp = db.prepare(`
     WITH vs AS (${VOTE_ARM_SERVE})
     SELECT arm, digest_date, SUM(verdict = 1) AS up FROM vs GROUP BY arm, digest_date`)
-    .all(windowStart) as { arm: string; digest_date: string; up: number | null }[];
+    .all(windowStart, maxDate) as { arm: string; digest_date: string; up: number | null }[];
   // Per-(arm,day) 👎 — mirrors dayUp exactly (same VOTE_ARM_SERVE join, same digest_date keying), so
   // a downvote debits the same day it credits an up. Net per-day credit = opens + 👍 − 👎; may be < 0.
   const dayDown = db.prepare(`
     WITH vs AS (${VOTE_ARM_SERVE})
     SELECT arm, digest_date, SUM(verdict = -1) AS down FROM vs GROUP BY arm, digest_date`)
-    .all(windowStart) as { arm: string; digest_date: string; down: number | null }[];
+    .all(windowStart, maxDate) as { arm: string; digest_date: string; down: number | null }[];
   const upByArmDay = new Map(dayUp.map(d => [`${d.arm} ${d.digest_date}`, Number(d.up ?? 0)]));
   const downByArmDay = new Map(dayDown.map(d => [`${d.arm} ${d.digest_date}`, Number(d.down ?? 0)]));
   const armDays: ArmDay[] = dayServeOpen.map(d => {
@@ -211,11 +236,11 @@ export function interleaveReport(
     WITH fs AS (${ARM_FIRST_SERVE})
     SELECT fs.arm AS arm, fs.tweet_id AS tweet_id, COUNT(DISTINCT o.tweet_id) AS opened
     FROM fs LEFT JOIN digest_opens o ON o.tweet_id = fs.tweet_id AND o.ts >= fs.ts
-    GROUP BY fs.arm, fs.tweet_id`).all(windowStart) as { arm: string; tweet_id: string; opened: number }[];
+    GROUP BY fs.arm, fs.tweet_id`).all(windowStart, maxDate) as { arm: string; tweet_id: string; opened: number }[];
   const tweetVotes = db.prepare(`
     WITH vs AS (${VOTE_ARM_SERVE})
     SELECT tweet_id, SUM(verdict = 1) AS up, SUM(verdict = -1) AS down FROM vs GROUP BY tweet_id`)
-    .all(windowStart) as { tweet_id: string; up: number | null; down: number | null }[];
+    .all(windowStart, maxDate) as { tweet_id: string; up: number | null; down: number | null }[];
   const votesByTweet = new Map(tweetVotes.map(t => [t.tweet_id, { up: Number(t.up ?? 0), down: Number(t.down ?? 0) }]));
   const armTweets: ArmTweet[] = tweetServeOpen.map(t => {
     const v = votesByTweet.get(t.tweet_id) ?? { up: 0, down: 0 };
@@ -286,6 +311,13 @@ export function interleaveReport(
       const lead = lo > 0 ? armA : armB; // whole CI > 0 → armA leads; whole CI < 0 → armB leads
       verdict = `LEAN ${lead} at n=${judged} judged events — the (${armA} − ${armB}) credit-rate CI [${lo.toFixed(3)}, ${hi.toFixed(3)}] excludes 0 at the predeclared horizon. The window's verdict.`;
     }
+  }
+  // M16: past the horizon this is a re-read of a CLOSED window, never a fresh verdict — exposures
+  // are frozen to the first horizonDays serve days (maxDate), and the canonical read is the one
+  // recorded at the horizon. Say so on every post-horizon print.
+  if (closed && matchup) {
+    verdict += ` [window CLOSED — exposures frozen to its first ${horizonDays} serve days ` +
+      `(through ${maxDate}); this is a re-read, the canonical verdict is the horizon read recorded in PROGRESS.]`;
   }
 
   return { arms, dayWins, tiedDays, judged, matchup, diffCI, verdict };

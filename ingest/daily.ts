@@ -43,20 +43,27 @@ async function teaser(): Promise<string> {
 // (the frozen recipe: pre-cutoff labels only, features refreshed daily — interleave.ts doctrine).
 // Copies rubric's graceful contract: any failure prints ONE loud line and the digest continues —
 // stale/missing scores just hit buildDigest's pool-mean fallback, never a block.
-try {
-  const dumpScript = fileURLToPath(new URL("./review_lr_dump.ts", import.meta.url));
-  const pyScript = fileURLToPath(new URL("./review_lr.py", import.meta.url));
-  const jsonPath = join(tmpdir(), "afy-review-lr-pool.json"); // fixed name: self-overwriting, no tmp litter
-  // ponytail: 15-min ceilings + SIGKILL so a wedged model download can't stall the 8am ping forever.
-  const opts = { timeout: 900_000, maxBuffer: 256 * 1024 * 1024, killSignal: "SIGKILL" as const };
-  const { stdout } = await execFileP(
-    process.execPath, ["--experimental-strip-types", dumpScript, "--days", "7"], opts);
-  writeFileSync(jsonPath, stdout);
-  const { stdout: py } = await execFileP(UV_BIN, ["run", pyScript, jsonPath], opts);
-  console.log(py.trim().split("\n").at(-1) ?? "[afy-daily] review-lr rescored");
-} catch (e) {
-  console.error("[afy-daily] review-lr refresh failed (non-blocking, digest continues; " +
-    "stale scores fall back to pool-mean at rank time):", String(e));
+// M16: TWO passes — "frozen" retrains the incumbent review-lr recipe (pre-cutoff labels only) into
+// review_lr_scores; "online" retrains the closed-loop arm (+ post-cutoff train-split votes cast
+// before this run — test-then-train: the retrain precedes the digest build, so a serve is judged
+// before its outcome can reach training) into online_lr_scores. Failures stay independent AND
+// non-blocking: one arm's wedge costs that arm its refresh, never the digest.
+for (const labelMode of ["frozen", "online"] as const) {
+  try {
+    const dumpScript = fileURLToPath(new URL("./review_lr_dump.ts", import.meta.url));
+    const pyScript = fileURLToPath(new URL("./review_lr.py", import.meta.url));
+    const jsonPath = join(tmpdir(), `afy-review-lr-pool-${labelMode}.json`); // fixed names: self-overwriting, no tmp litter
+    // ponytail: 15-min ceilings + SIGKILL so a wedged model download can't stall the 8am ping forever.
+    const opts = { timeout: 900_000, maxBuffer: 256 * 1024 * 1024, killSignal: "SIGKILL" as const };
+    const { stdout } = await execFileP(
+      process.execPath, ["--experimental-strip-types", dumpScript, "--days", "7", "--labels", labelMode], opts);
+    writeFileSync(jsonPath, stdout);
+    const { stdout: py } = await execFileP(UV_BIN, ["run", pyScript, jsonPath], opts);
+    console.log(py.trim().split("\n").at(-1) ?? `[afy-daily] ${labelMode}-label arm rescored`);
+  } catch (e) {
+    console.error(`[afy-daily] ${labelMode}-label arm refresh failed (non-blocking, digest continues; ` +
+      "stale scores fall back to pool-mean at rank time):", String(e));
+  }
 }
 
 // M8: score new tweets against the rubric BEFORE the digest builds, at the default cap. Fully

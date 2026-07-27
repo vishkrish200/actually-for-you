@@ -96,15 +96,23 @@ export function mixFinal(
 // into `npm run interleave`, which judges by opens+👍. This COMPARES rankers — it never mints
 // labels (votes stay the only gold; the keyword arm on the product surface is still never a label
 // source), and the explore lane is untouched (arm=null, ~10%, day-seeded — the invariant holds).
-export type Arm = "mix" | "keyword" | "taste" | "review_lr";
+export type Arm = "mix" | "keyword" | "taste" | "review_lr" | "online_lr";
 
 // THE matchup, pinned by a named const (the plan's design point). null = plain M9 mix digest —
 // today's behavior, EXACTLY (regression-tested byte-for-byte). Change this const to swap
 // matchups; buildDigest takes an override param so tests can pin either state without a global edit.
-// Current matchup (window re-frozen 2026-07-15, WINDOW_START 2026-07-16 — interleave.ts): the
-// offline SHIP-gate clearer review_lr meets the live product ranker (mix). The prior mix-vs-keyword
-// window was superseded before its horizon without a CI read (matchup change, not optional stopping).
-export const MATCHUP: readonly [Arm, Arm] | null = ["mix", "review_lr"];
+// Current matchup (M16 window, frozen 2026-07-28 — interleave.ts): the frozen-label incumbent
+// review_lr meets online_lr, the closed-loop challenger whose labels grow daily with the
+// train-split vote stream. THE M16 question: does closing the label loop beat the frozen recipe?
+// (The prior mix-vs-review_lr window closed 2026-07-18: TIED at n=49 — PROGRESS.)
+export const MATCHUP: readonly [Arm, Arm] | null = ["review_lr", "online_lr"];
+
+// M16: which external score table feeds an arm (review_lr.py writes both; daily.ts runs it twice).
+// Arms not listed here score in-process via ARM_SCORERS.
+export const EXTERNAL_ARM_TABLES: Partial<Record<Arm, string>> = {
+  review_lr: "review_lr_scores",
+  online_lr: "online_lr_scores",
+};
 
 // An arm scorer orders a candidate that already carries its pool-wide mix score/parts. Higher =
 // better for that arm. mix = the M9 blend (what the digest ships); keyword = AI_LEXICON hit count
@@ -140,10 +148,10 @@ function reviewLrScorer(
 // serving intact. Stable tiebreak on tweet_id (eval.ts convention) so equal-scoring rows — very
 // common for the integer-valued keyword arm — order deterministically, not by input/JS-sort luck.
 export function armRanking(
-  candidates: DigestItem[], arm: Arm, slots: number, reviewLr?: Map<string, number>,
+  candidates: DigestItem[], arm: Arm, slots: number, external?: Map<string, number>,
 ): DigestItem[] {
-  const score = arm === "review_lr"
-    ? reviewLrScorer(candidates, reviewLr ?? new Map())
+  const score = arm in EXTERNAL_ARM_TABLES
+    ? reviewLrScorer(candidates, external ?? new Map())
     : ARM_SCORERS[arm]!;
   const ranked = candidates
     .map(c => ({ c, s: score(c) }))
@@ -466,29 +474,33 @@ export function buildDigest(
     picked = diversify(scored, 0.75, slots);
   } else {
     const [armA, armB] = matchup;
-    // M14: the review_lr arm's scores live in the external review_lr_scores table (written by
-    // review_lr.py; refreshed daily by daily.ts). Read-tolerant: a missing table is an empty map
-    // and every candidate falls to the pool-mean fallback — the digest must never block on it.
-    let reviewLr = new Map<string, number>();
-    if (armA === "review_lr" || armB === "review_lr") {
+    // M14/M16: external arms (review_lr, online_lr) score from their own table (written by
+    // review_lr.py; refreshed daily by daily.ts — twice, once per label mode). Read-tolerant: a
+    // missing table is an empty map and every candidate falls to the pool-mean fallback — the
+    // digest must never block on it. Per-arm maps, so neither arm can read the other's output.
+    const externalFor = (arm: Arm): Map<string, number> => {
+      const table = EXTERNAL_ARM_TABLES[arm];
+      let scores = new Map<string, number>();
+      if (!table) return scores;
       try {
-        const rows = db.prepare(`SELECT tweet_id, score FROM review_lr_scores`).all() as
+        const rows = db.prepare(`SELECT tweet_id, score FROM ${table}`).all() as
           { tweet_id: string; score: number }[];
-        reviewLr = new Map(rows.map(r => [r.tweet_id, r.score]));
+        scores = new Map(rows.map(r => [r.tweet_id, r.score]));
       } catch { /* table not created yet — pool-mean fallback for the whole pool */ }
-      const missing = candidates.filter(c => !reviewLr.has(c.tweet_id)).length;
+      const missing = candidates.filter(c => !scores.has(c.tweet_id)).length;
       if (missing * 10 > candidates.length) {
-        console.warn(`[digest] review_lr scores cover only ${candidates.length - missing}/` +
+        console.warn(`[digest] ${table} covers only ${candidates.length - missing}/` +
           `${candidates.length} candidates — uncovered cards score pool-mean (arm is flying ` +
           `partially blind). Refresh: review_lr_dump.ts + review_lr.py (daily.ts runs both).`);
       }
-    }
+      return scores;
+    };
     // Each arm ranks the whole filtered pool (no score>0 pre-filter: an arm may legitimately rank
     // a below-mix-mean tweet first — e.g. keyword loves a high-AI-density tweet the mix docks on a
     // cold author — and the draft, not a mix threshold, decides the slate). MMR-diversify each arm's
     // list to `slots`, then team-draft. Explore still surfaces the truly un-drafted tail below.
-    const rankA = armRanking(candidates as DigestItem[], armA, slots, reviewLr);
-    const rankB = armRanking(candidates as DigestItem[], armB, slots, reviewLr);
+    const rankA = armRanking(candidates as DigestItem[], armA, slots, externalFor(armA));
+    const rankB = armRanking(candidates as DigestItem[], armB, slots, externalFor(armB));
     picked = teamDraft(rankA, rankB, armA, armB, seed, slots);
   }
 
