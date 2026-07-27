@@ -21,6 +21,7 @@ ingest/.public-feed-cache.json.tmp
 ducky-cli/
 .claude/
 .playwright-cli/
+.wrangler/
 output/
 # working draft with unresolved [FILL] notes — the published post is docs/blog-post.md
 notes/blog/
