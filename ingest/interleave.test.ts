@@ -410,8 +410,8 @@ describe("M11 interleave report (read-only math)", () => {
       }
     };
     // In-window serve days, one per calendar day from WINDOW_START (M16 freeze: horizon 7).
-    const days = ["2026-07-28", "2026-07-29", "2026-07-30", "2026-07-31",
-      "2026-08-01", "2026-08-02", "2026-08-03", "2026-08-04"];
+    const days = ["2026-07-29", "2026-07-30", "2026-07-31", "2026-08-01",
+      "2026-08-02", "2026-08-03", "2026-08-04", "2026-08-05"];
     // Day 1: 20 opened serves → 20 judged events; 1 < HORIZON_DAYS → no CI regardless of the floor.
     serveDay(days[0]);
     const day1 = interleaveReport(db); // frozen defaults: WINDOW_START / HORIZON_DAYS

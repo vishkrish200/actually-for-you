@@ -70,7 +70,15 @@ export const JUDGED_FLOOR = 30;
 // serves — the post-horizon "TIED at n=117" drift the old window's CLI printed is structurally
 // gone. (Late votes/opens on in-window serves may still mature a re-run's numbers slightly; the
 // canonical read is the one recorded at the horizon, in PROGRESS.)
-export const WINDOW_START = "2026-07-28";
+// AMENDED 2026-07-28, before any serve of the DECLARED matchup: the 07-28 08:00 digest was
+// served by the long-running server process still holding pre-M16 code in memory (the daily
+// pipeline ran M16 and built online_lr_scores, but the serve path is the server) — so 07-28's
+// digest_log rows are mix-vs-review_lr, the OLD matchup, on what was declared an in-window date.
+// Three arms in one window is not a window. WINDOW_START moves 2026-07-28 → 2026-07-29; zero
+// review_lr-vs-online_lr serves existed at amendment time, so no peeking occurred — the declared
+// window simply never started. Deploy rule this teaches: a matchup change is LIVE only after the
+// server process restarts; freeze WINDOW_START to the first post-restart digest date.
+export const WINDOW_START = "2026-07-29";
 export const HORIZON_DAYS = 7;
 
 // Arm-attributed FIRST serve per tweet within the window: the earliest in-window serve that a team

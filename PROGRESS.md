@@ -26,9 +26,18 @@ on a growing vote stream, and the eval survives it via a declared, deterministic
   construction: retrain precedes the digest build, so a serve is judged before its outcome can
   reach training. Behavioral signals still never become labels (the ~0.44 result stands).
 - **New confirmatory window (interleave.ts): `MATCHUP = ["review_lr","online_lr"]`,
-  `WINDOW_START = 2026-07-28`, `HORIZON_DAYS = 7` serve-days** (2-day reads were power-starved —
-  the 07-18 TIED mostly measured low usage). Credit formula, 30-judged floor, tweet-bootstrap CI
-  unchanged from 07-15. THE M16 question: does closing the label loop beat the frozen recipe?
+  `WINDOW_START = 2026-07-29` (amended, below), `HORIZON_DAYS = 7` serve-days** (2-day reads were
+  power-starved — the 07-18 TIED mostly measured low usage). Credit formula, 30-judged floor,
+  tweet-bootstrap CI unchanged from 07-15. THE M16 question: does closing the label loop beat the
+  frozen recipe?
+- **AMENDMENT 2026-07-28 (before any declared-matchup serve): `WINDOW_START` 07-28 → 07-29.** The
+  07-28 08:00 digest served mix-vs-review_lr — the long-running server process still held pre-M16
+  code (the daily ran M16 fine: `online_lr_scores` exists with 5,315 rows; the SERVE path is the
+  server, which needs a restart). Verified at amendment time: digest_log for 07-28 shows arms
+  mix 23 / review_lr 23 / explore 6, and ZERO online_lr serves exist anywhere — no peeking was
+  possible on a matchup that never served. Deploy rule recorded in interleave.ts: a matchup change
+  is live only after `com.afy.ingest` restarts; freeze `WINDOW_START` to the first post-restart
+  digest date.
 - **Hygiene fix, same freeze:** window exposures now HARD-CAP at the first `HORIZON_DAYS` distinct
   serve days — a post-horizon re-run can never grow a closed window (the "TIED at n=117" drift the
   old CLI printed on the closed 07-16 window is structurally gone; post-horizon prints carry a
