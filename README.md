@@ -8,7 +8,7 @@ leaves my machine.
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="docs/demo-light.gif">
-  <img src="docs/demo.gif" alt="The digest reader — tweets re-ranked by taste-match to my likes" width="656">
+  <img src="docs/demo.gif" alt="The desktop digest reader — tweets re-ranked by taste-match to my likes">
 </picture>
 
 _Every card: a **✦ score** (taste + LLM rubric + author prior) and 👍/👎 votes that become the
